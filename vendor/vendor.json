@@ -1,0 +1,97 @@
+{
+	"comment": "",
+	"ignore": "test",
+	"package": [
+		{
+			"checksumSHA1": "MCdgj+GjlrEI2BedTrgQwTDUEbA=",
+			"path": "github.com/eleme/influx-proxy/backend",
+			"revision": "3300b53a2afd0076741b9b3122b55533ffc1baea",
+			"revisionTime": "2017-08-08T09:54:06Z"
+		},
+		{
+			"checksumSHA1": "lbdyAcBN93LFrGCrbp9Cff4+yAg=",
+			"path": "github.com/eleme/influx-proxy/monitor",
+			"revision": "3300b53a2afd0076741b9b3122b55533ffc1baea",
+			"revisionTime": "2017-08-08T09:54:06Z"
+		},
+		{
+			"checksumSHA1": "5pym+6oCzNF03TzNeCnZnAi04eI=",
+			"path": "github.com/eleme/influx-proxy/service",
+			"revision": "3300b53a2afd0076741b9b3122b55533ffc1baea",
+			"revisionTime": "2017-08-08T09:54:06Z"
+		},
+		{
+			"checksumSHA1": "2SyY8LpzxtFHo9yLZp4n1SdC65A=",
+			"path": "github.com/influxdata/influxdb/client/v2",
+			"revision": "6d94714e834092e0eff876a7a9616c14c54d876d",
+			"revisionTime": "2017-08-10T02:32:10Z"
+		},
+		{
+			"checksumSHA1": "+xKQqEHpLnfoZU1uX7DH+dd4Q+g=",
+			"path": "github.com/influxdata/influxdb/models",
+			"revision": "6d94714e834092e0eff876a7a9616c14c54d876d",
+			"revisionTime": "2017-08-10T02:32:10Z"
+		},
+		{
+			"checksumSHA1": "H/J/qLqzUONXIecHHKtVZmxJZZA=",
+			"path": "github.com/influxdata/influxdb/pkg/escape",
+			"revision": "6d94714e834092e0eff876a7a9616c14c54d876d",
+			"revisionTime": "2017-08-10T02:32:10Z"
+		},
+		{
+			"checksumSHA1": "/ggkqfjlwE/QM/bNWX1thB4tiDY=",
+			"path": "github.com/shell909090/influx-proxy/backend",
+			"revision": "3300b53a2afd0076741b9b3122b55533ffc1baea",
+			"revisionTime": "2017-08-08T09:54:06Z"
+		},
+		{
+			"checksumSHA1": "N13qIBCKdcOMC4qzWZr9td1TRrk=",
+			"path": "github.com/shell909090/influx-proxy/monitor",
+			"revision": "3300b53a2afd0076741b9b3122b55533ffc1baea",
+			"revisionTime": "2017-08-08T09:54:06Z"
+		},
+		{
+			"checksumSHA1": "TM3Neoy1xRAKyZYMGzKc41sDFW4=",
+			"path": "gopkg.in/natefinch/lumberjack.v2",
+			"revision": "a96e63847dc3c67d17befa69c303767e2f84e54f",
+			"revisionTime": "2017-05-31T16:03:50Z"
+		},
+		{
+			"checksumSHA1": "OU/wHTJqhyQfyRnXMVWx1Ox06kQ=",
+			"path": "gopkg.in/redis.v5",
+			"revision": "a16aeec10ff407b1e7be6dd35797ccf5426ef0f0",
+			"revisionTime": "2017-03-04T11:38:25Z"
+		},
+		{
+			"checksumSHA1": "efyYmNqK7vcPhXW4KXfwbdA1wr4=",
+			"path": "gopkg.in/redis.v5/internal",
+			"revision": "a16aeec10ff407b1e7be6dd35797ccf5426ef0f0",
+			"revisionTime": "2017-03-04T11:38:25Z"
+		},
+		{
+			"checksumSHA1": "2Ek4SixeRSKOX3mUiBMs3Aw+Guc=",
+			"path": "gopkg.in/redis.v5/internal/consistenthash",
+			"revision": "a16aeec10ff407b1e7be6dd35797ccf5426ef0f0",
+			"revisionTime": "2017-03-04T11:38:25Z"
+		},
+		{
+			"checksumSHA1": "rJYVKcBrwYUGl7nuuusmZGrt8mY=",
+			"path": "gopkg.in/redis.v5/internal/hashtag",
+			"revision": "a16aeec10ff407b1e7be6dd35797ccf5426ef0f0",
+			"revisionTime": "2017-03-04T11:38:25Z"
+		},
+		{
+			"checksumSHA1": "zsH5BF9qc31R7eEEVYLsjbIigDQ=",
+			"path": "gopkg.in/redis.v5/internal/pool",
+			"revision": "a16aeec10ff407b1e7be6dd35797ccf5426ef0f0",
+			"revisionTime": "2017-03-04T11:38:25Z"
+		},
+		{
+			"checksumSHA1": "EqPdu5g8NhzxQOMCvzbreTQlzVE=",
+			"path": "gopkg.in/redis.v5/internal/proto",
+			"revision": "a16aeec10ff407b1e7be6dd35797ccf5426ef0f0",
+			"revisionTime": "2017-03-04T11:38:25Z"
+		}
+	],
+	"rootPath": "github.com/eleme/influx-proxy"
+}
