@@ -98,9 +98,11 @@ func CreateTestInfluxCluster() (ic *InfluxCluster, err error) {
 	ic.backends = backends
 	ic.nexts = "test2"
 	ic.bas = append(ic.bas, backends["test2"])
-	m2bs := make(map[string][]BackendAPI)
-	m2bs["cpu"] = append(m2bs["cpu"], backends["write_only"], backends["test1"])
-	m2bs["write_only"] = append(m2bs["write_only"], backends["write_only"])
+	m2bs := make(map[string]map[string][]BackendAPI)
+	m2bs["cpu"] = make(map[string][]BackendAPI)
+	m2bs["write_only"] = make(map[string][]BackendAPI)
+	m2bs["cpu"]["0"] = append(m2bs["cpu"]["0"], backends["write_only"], backends["test1"])
+	m2bs["write_only"]["0"] = append(m2bs["write_only"]["0"], backends["write_only"])
 	ic.m2bs = m2bs
 
 	return
@@ -138,7 +140,7 @@ func TestInfluxdbClusterWrite(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		err := ic.Write(tt.args)
+		err := ic.Write(tt.args, "ns")
 		if err != nil {
 			t.Error(tt.name, err)
 			continue
