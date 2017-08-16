@@ -42,7 +42,7 @@ type Config struct {
 	Node string
 }
 
-func LoadJson(configfile string, cfg interface{}) (err error) {
+func loadJSON(configfile string, cfg interface{}) (err error) {
 	file, err := os.Open(configfile)
 	if err != nil {
 		return
@@ -74,7 +74,7 @@ func main() {
 	var cfg Config
 
 	if ConfigFile != "" {
-		err = LoadJson(ConfigFile, &cfg)
+		err = loadJSON(ConfigFile, &cfg)
 		if err != nil {
 			log.Print("load config failed: ", err)
 			return
@@ -99,20 +99,28 @@ func main() {
 	}
 
 	ic := backend.NewInfluxCluster(rcs, &nodecfg)
-	ic.LoadConfig()
+
+	err = ic.LoadConfig()
+	if err != nil {
+		log.Print("load config failed: ", err)
+	}
 
 	mux := http.NewServeMux()
 	NewHttpService(ic, nodecfg.DB).Register(mux)
 
 	log.Printf("http service start.")
+
 	server := &http.Server{
 		Addr:        nodecfg.ListenAddr,
 		Handler:     mux,
 		IdleTimeout: time.Duration(nodecfg.IdleTimeout) * time.Second,
 	}
+	defer server.Close()
+
 	if nodecfg.IdleTimeout <= 0 {
 		server.IdleTimeout = 10 * time.Second
 	}
+
 	err = server.ListenAndServe()
 	if err != nil {
 		log.Print(err)
