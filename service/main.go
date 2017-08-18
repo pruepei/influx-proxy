@@ -6,7 +6,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"flag"
 	"log"
 	"net/http"
@@ -20,7 +19,6 @@ import (
 )
 
 var (
-	ErrConfig   = errors.New("config parse error")
 	ConfigFile  string
 	NodeName    string
 	RedisAddr   string

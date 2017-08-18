@@ -7,7 +7,7 @@ package backend
 import "net/http"
 
 type Querier interface {
-	Query(w http.ResponseWriter, req *http.Request) (err error)
+	Query(w http.ResponseWriter, req *http.Request) (res []byte, err error)
 }
 
 type BackendAPI interface {

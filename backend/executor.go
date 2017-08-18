@@ -19,12 +19,12 @@ var (
 type InfluxQLExecutor struct {
 }
 
-func (iqe *InfluxQLExecutor) Query(w http.ResponseWriter, req *http.Request) (err error) {
+func (iqe *InfluxQLExecutor) Query(w http.ResponseWriter, req *http.Request) (res []byte, err error) {
 	q := strings.TrimSpace(req.FormValue("q"))
 	// better way??
 	matched, err := regexp.MatchString(ExecutorCmds, q)
 	if err != nil || !matched {
-		return ErrNotClusterQuery
+		return nil, ErrNotClusterQuery
 	}
 
 	w.WriteHeader(200)

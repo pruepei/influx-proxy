@@ -174,8 +174,8 @@ func (rcs *RedisConfigSource) LoadConfigFromRedis(name string) (cfg *BackendConf
 	return
 }
 
-func (rcs *RedisConfigSource) LoadMeasurements() (m_map map[string]map[string][]string, err error) {
-	m_map = make(map[string]map[string][]string)
+func (rcs *RedisConfigSource) LoadMeasurements() (m_map map[string][][]string, err error) {
+	m_map = make(map[string][][]string)
 
 	names, err := rcs.client.Keys("m:*").Result()
 	if err != nil {
@@ -193,9 +193,9 @@ func (rcs *RedisConfigSource) LoadMeasurements() (m_map map[string]map[string][]
 			return m_map, err
 		}
 		measurement := key[2:len(key)]
-		m_map[measurement] = make(map[string][]string)
+		m_map[measurement] = make([][]string, len(bs))
 		for i, b := range bs {
-			m_map[measurement][string(i)] = strings.Split(b, ",")
+			m_map[measurement][i] = strings.Split(b, ",")
 		}
 	}
 	log.Printf("%d measurements loaded from redis.", len(m_map))

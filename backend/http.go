@@ -131,7 +131,7 @@ func (hb *HttpBackend) GetZone() (zone string) {
 
 // Don't setup Accept-Encoding: gzip. Let real client do so.
 // If real client don't support gzip and we setted, it will be a mistake.
-func (hb *HttpBackend) Query(w http.ResponseWriter, req *http.Request) (err error) {
+func (hb *HttpBackend) Query(w http.ResponseWriter, req *http.Request) (result []byte, err error) {
 	if len(req.Form) == 0 {
 		req.Form = url.Values{}
 	}
@@ -155,14 +155,7 @@ func (hb *HttpBackend) Query(w http.ResponseWriter, req *http.Request) (err erro
 
 	copyHeader(w.Header(), resp.Header)
 
-	p, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("read body error: %s,the query is %s\n", err, q)
-		return
-	}
-
-	w.WriteHeader(resp.StatusCode)
-	w.Write(p)
+	result, err = ioutil.ReadAll(resp.Body)
 	return
 }
 
