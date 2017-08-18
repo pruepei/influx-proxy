@@ -561,7 +561,7 @@ func (ic *InfluxCluster) WriteRow(point models.Point) {
 		return
 	}
 
-	key := point.Name()
+	key := string(point.Name())
 	r, ok := ic.GetRing(key)
 	if !ok {
 		log.Printf("new measurement: %s\n", key)
