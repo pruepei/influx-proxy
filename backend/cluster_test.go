@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/toolkits/consistent/rings"
 )
 
 func TestScanKey(t *testing.T) {
@@ -98,10 +100,16 @@ func CreateTestInfluxCluster() (ic *InfluxCluster, err error) {
 	ic.backends = backends
 	ic.nexts = "test2"
 	ic.bas = append(ic.bas, backends["test2"])
-	m2bs := make(map[string][]BackendAPI)
-	m2bs["cpu"] = append(m2bs["cpu"], backends["write_only"], backends["test1"])
-	m2bs["write_only"] = append(m2bs["write_only"], backends["write_only"])
-	ic.m2bs = m2bs
+	m2ring := make(map[string]*Ring)
+	r1 := &Ring{n2bs: make([][]BackendAPI, 1)}
+	r1.n2bs[0] = []BackendAPI{backends["write_only"], backends["test1"]}
+	r1.ring = rings.NewConsistentHashNodesRing(DefaultReplicas, []string{"0"})
+	m2ring["cpu"] = r1
+	r2 := &Ring{n2bs: make([][]BackendAPI, 1)}
+	r2.n2bs[0] = []BackendAPI{backends["write_only"]}
+	r2.ring = rings.NewConsistentHashNodesRing(DefaultReplicas, []string{"0"})
+	m2ring["write_only"] = r2
+	ic.m2ring = m2ring
 
 	return
 }
@@ -138,7 +146,7 @@ func TestInfluxdbClusterWrite(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		err := ic.Write(tt.args)
+		err := ic.Write(tt.args, "ns")
 		if err != nil {
 			t.Error(tt.name, err)
 			continue
@@ -193,12 +201,12 @@ func TestInfluxdbClusterQuery(t *testing.T) {
 		{
 			name:  "cpu_load",
 			query: " select cpu_load from cpu WHERE time > now() - 1m",
-			want:  204,
+			want:  200,
 		},
 		{
 			name:  "cpu.load",
 			query: " select cpu_load from \"cpu.load\" WHERE time > now() - 1m",
-			want:  204,
+			want:  200,
 		},
 		{
 			name:  "load.cpu",
@@ -208,7 +216,7 @@ func TestInfluxdbClusterQuery(t *testing.T) {
 		{
 			name:  "show_cpu",
 			query: "SHOW tag keys from \"cpu\" ",
-			want:  204,
+			want:  200,
 		},
 		{
 			name:  "delete_cpu",

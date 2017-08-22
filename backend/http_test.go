@@ -131,14 +131,9 @@ func TestHttpBackendQuery(t *testing.T) {
 
 	w := NewDummyResponseWriter()
 
-	err = hb.Query(w, req)
+	_, err = hb.Query(w, req)
 	if err != nil {
 		t.Errorf("error: %s", err)
-		return
-	}
-
-	if w.status != 204 {
-		t.Errorf("response error")
 		return
 	}
 }

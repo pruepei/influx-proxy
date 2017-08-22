@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,9 @@ import (
 	"unsafe"
 
 	"github.com/eleme/influx-proxy/monitor"
+	"github.com/influxdata/influxdb/influxql"
+	"github.com/influxdata/influxdb/models"
+	"github.com/toolkits/consistent/rings"
 )
 
 var (
@@ -26,6 +30,13 @@ var (
 	ErrBackendNotExist = errors.New("use a backend not exists")
 	ErrQueryForbidden  = errors.New("query forbidden")
 )
+
+const DefaultReplicas = 128
+
+type Result struct {
+	Res []byte
+	Err error
+}
 
 func ScanKey(pointbuf []byte) (key string, err error) {
 	var keybuf [100]byte
@@ -60,7 +71,24 @@ func TrimRight(p []byte, s []byte) (r []byte) {
 	return r[0 : i+1]
 }
 
-// TODO: kafka next
+// every measurement has a ring, the ring has N virtual nodes and M members.
+// N = M * Replicas
+//
+// write logic
+// It use measurement+sortedTag to get node, then use the node key to get the backends,
+// and write data to backends .
+//
+// query logic
+// If ring has only one member, query result and return it.
+// If the statement is 'show tag keys' or 'show field keys',
+// query with one node and return result.
+// If the statement is 'show tag values' or 'select',
+// relay the query to all members, merge the result and return it.
+
+type Ring struct {
+	ring *rings.ConsistentHashNodeRing // consistent ring instance
+	n2bs [][]BackendAPI                // ring node index to backends
+}
 
 type InfluxCluster struct {
 	lock           sync.RWMutex
@@ -72,13 +100,14 @@ type InfluxCluster struct {
 	cfgsrc         *RedisConfigSource
 	bas            []BackendAPI
 	backends       map[string]BackendAPI
-	m2bs           map[string][]BackendAPI // measurements to backends
+	m2ring         map[string]*Ring // measurements to ring
 	stats          *Statistics
 	counter        *Statistics
 	ticker         *time.Ticker
 	defaultTags    map[string]string
 	WriteTracing   int
 	QueryTracing   int
+	Replicas       int32
 }
 
 type Statistics struct {
@@ -107,6 +136,10 @@ func NewInfluxCluster(cfgsrc *RedisConfigSource, nodecfg *NodeConfig) (ic *Influ
 		defaultTags:    map[string]string{"addr": nodecfg.ListenAddr},
 		WriteTracing:   nodecfg.WriteTracing,
 		QueryTracing:   nodecfg.QueryTracing,
+		Replicas:       nodecfg.Replicas,
+	}
+	if nodecfg.Replicas == 0 {
+		ic.Replicas = DefaultReplicas
 	}
 	host, err := os.Hostname()
 	if err != nil {
@@ -182,7 +215,7 @@ func (ic *InfluxCluster) WriteStatistics() (err error) {
 	if err != nil {
 		return
 	}
-	return ic.Write([]byte(line + "\n"))
+	return ic.Write([]byte(line+"\n"), "ns")
 }
 
 func (ic *InfluxCluster) ForbidQuery(s string) (err error) {
@@ -247,26 +280,33 @@ func (ic *InfluxCluster) loadBackends() (backends map[string]BackendAPI, bas []B
 	return
 }
 
-func (ic *InfluxCluster) loadMeasurements(backends map[string]BackendAPI) (m2bs map[string][]BackendAPI, err error) {
-	m2bs = make(map[string][]BackendAPI)
+func (ic *InfluxCluster) loadMeasurements(backends map[string]BackendAPI) (m2ring map[string]*Ring, err error) {
+	m2ring = make(map[string]*Ring)
 
 	m_map, err := ic.cfgsrc.LoadMeasurements()
 	if err != nil {
 		return
 	}
 
-	for name, bs_names := range m_map {
-		var bss []BackendAPI
-		for _, bs_name := range bs_names {
-			bs, ok := backends[bs_name]
-			if !ok {
-				err = ErrBackendNotExist
-				log.Println(bs_name, err)
-				continue
+	for name, bs := range m_map {
+		r := &Ring{n2bs: make([][]BackendAPI, len(bs))}
+		nodes := make([]string, len(bs))
+		for key, bs_names := range bs {
+			var bss []BackendAPI
+			for _, bs_name := range bs_names {
+				bs, ok := backends[bs_name]
+				if !ok {
+					err = ErrBackendNotExist
+					log.Println(bs_name, err)
+					continue
+				}
+				bss = append(bss, bs)
 			}
-			bss = append(bss, bs)
+			r.n2bs[key] = bss
+			nodes[key] = strconv.Itoa(key)
 		}
-		m2bs[name] = bss
+		r.ring = rings.NewConsistentHashNodesRing(ic.Replicas, nodes)
+		m2ring[name] = r
 	}
 	return
 }
@@ -277,7 +317,7 @@ func (ic *InfluxCluster) LoadConfig() (err error) {
 		return
 	}
 
-	m2bs, err := ic.loadMeasurements(backends)
+	m2ring, err := ic.loadMeasurements(backends)
 	if err != nil {
 		return
 	}
@@ -286,7 +326,7 @@ func (ic *InfluxCluster) LoadConfig() (err error) {
 	orig_backends := ic.backends
 	ic.backends = backends
 	ic.bas = bas
-	ic.m2bs = m2bs
+	ic.m2ring = m2ring
 	ic.lock.Unlock()
 
 	for name, bs := range orig_backends {
@@ -328,19 +368,21 @@ func (ic *InfluxCluster) CheckQuery(q string) (err error) {
 	return
 }
 
-func (ic *InfluxCluster) GetBackends(key string) (backends []BackendAPI, ok bool) {
+func (ic *InfluxCluster) GetRing(key string) (ring *Ring, ok bool) {
 	ic.lock.RLock()
 	defer ic.lock.RUnlock()
 
-	backends, ok = ic.m2bs[key]
+	// exact match
+	if ring, ok = ic.m2ring[key]; ok {
+		return
+	}
+
 	// match use prefix
-	if !ok {
-		for k, v := range ic.m2bs {
-			if strings.HasPrefix(key, k) {
-				backends = v
-				ok = true
-				break
-			}
+	for k, v := range ic.m2ring {
+		if strings.HasPrefix(key, k) {
+			ring = v
+			ok = true
+			break
 		}
 	}
 	return
@@ -370,7 +412,7 @@ func (ic *InfluxCluster) Query(w http.ResponseWriter, req *http.Request) (err er
 		return
 	}
 
-	err = ic.query_executor.Query(w, req)
+	_, err = ic.query_executor.Query(w, req)
 	if err == nil {
 		return
 	}
@@ -392,7 +434,7 @@ func (ic *InfluxCluster) Query(w http.ResponseWriter, req *http.Request) (err er
 		return
 	}
 
-	apis, ok := ic.GetBackends(key)
+	r, ok := ic.GetRing(key)
 	if !ok {
 		log.Printf("unknown measurement: %s,the query is %s\n", key, q)
 		w.WriteHeader(400)
@@ -401,9 +443,81 @@ func (ic *InfluxCluster) Query(w http.ResponseWriter, req *http.Request) (err er
 		return
 	}
 
-	// same zone first, other zone. pass non-active.
-	// TODO: better way?
+	if len(r.n2bs) == 1 {
+		return ic.executeWithNoShard(w, req, r.n2bs[0])
+	}
 
+	p := influxql.NewParser(strings.NewReader(q))
+	query, err := p.ParseQuery()
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte("parse query error"))
+		return
+	}
+	if len(query.Statements) > 1 {
+		log.Printf("not support query: %s\n", q)
+		w.WriteHeader(400)
+		w.Write([]byte("not support multiple query"))
+		return
+	}
+	switch (query.Statements[0]).(type) {
+	case *influxql.ShowFieldKeysStatement:
+		return ic.executeShowFieldKeysStatement(w, req, r.n2bs[0])
+	case *influxql.ShowTagKeysStatement:
+		return ic.executeShowTagKeysStatement(w, req, r.n2bs[0])
+	case *influxql.ShowTagValuesStatement:
+		return ic.executeShowTagValuesStatement(w, req, r.n2bs)
+	case *influxql.SelectStatement:
+		return ic.executeSelectStatement(w, req, r.n2bs)
+	default:
+		log.Printf("not support query: %s\n", q)
+		w.WriteHeader(400)
+		w.Write([]byte("not support"))
+		atomic.AddInt64(&ic.stats.QueryRequestsFail, 1)
+	}
+
+	return
+}
+
+func (ic *InfluxCluster) executeShowFieldKeysStatement(w http.ResponseWriter, req *http.Request, apis []BackendAPI) error {
+	return ic.executeWithNoShard(w, req, apis)
+}
+
+func (ic *InfluxCluster) executeShowTagKeysStatement(w http.ResponseWriter, req *http.Request, apis []BackendAPI) error {
+	return ic.executeWithNoShard(w, req, apis)
+}
+
+func (ic *InfluxCluster) executeShowTagValuesStatement(w http.ResponseWriter, req *http.Request, n2bs [][]BackendAPI) error {
+	// TODO
+	return errors.New("not support shard query")
+}
+
+func (ic *InfluxCluster) executeSelectStatement(w http.ResponseWriter, req *http.Request, n2bs [][]BackendAPI) error {
+	// TODO
+	return errors.New("not support shard query")
+}
+
+func (ic *InfluxCluster) executeWithNoShard(w http.ResponseWriter, req *http.Request, apis []BackendAPI) error {
+	result := make(chan *Result)
+	defer close(result)
+	go ic.executeQuery(w, req, apis, result)
+	res := <-result
+
+	if res.Err == nil {
+		w.WriteHeader(200)
+		w.Write(res.Res)
+		return nil
+	}
+
+	w.WriteHeader(400)
+	w.Write([]byte("query error"))
+	return res.Err
+}
+
+func (ic *InfluxCluster) executeQuery(w http.ResponseWriter, req *http.Request, apis []BackendAPI, result chan *Result) {
+	var res []byte
+	var err error
+	// same zone
 	for _, api := range apis {
 		if api.GetZone() != ic.Zone {
 			continue
@@ -411,61 +525,65 @@ func (ic *InfluxCluster) Query(w http.ResponseWriter, req *http.Request) (err er
 		if !api.IsActive() || api.IsWriteOnly() {
 			continue
 		}
-		err = api.Query(w, req)
+		res, err = api.Query(w, req)
 		if err == nil {
+			result <- &Result{Res: res}
 			return
 		}
 	}
 
+	// difference zone
 	for _, api := range apis {
 		if api.GetZone() == ic.Zone {
 			continue
 		}
-		if !api.IsActive() {
+		if !api.IsActive() || api.IsWriteOnly() {
 			continue
 		}
-		err = api.Query(w, req)
+		res, err = api.Query(w, req)
 		if err == nil {
+			result <- &Result{Res: res}
 			return
 		}
 	}
 
-	w.WriteHeader(400)
-	w.Write([]byte("query error"))
+	result <- &Result{Err: errors.New("query error")}
 	atomic.AddInt64(&ic.stats.QueryRequestsFail, 1)
-	return
 }
 
 // Wrong in one row will not stop others.
 // So don't try to return error, just print it.
-func (ic *InfluxCluster) WriteRow(line []byte) {
+func (ic *InfluxCluster) WriteRow(point models.Point) {
 	atomic.AddInt64(&ic.stats.PointsWritten, 1)
-	// maybe trim?
-	line = bytes.TrimRight(line, " \t\r\n")
 
-	// empty line, ignore it.
-	if len(line) == 0 {
+	// empty point, ignore it.
+	if point.StringSize() == 0 {
 		return
 	}
 
-	key, err := ScanKey(line)
-	if err != nil {
-		log.Printf("scan key error: %s\n", err)
-		atomic.AddInt64(&ic.stats.PointsWrittenFail, 1)
-		return
-	}
-
-	bs, ok := ic.GetBackends(key)
+	key := string(point.Name())
+	r, ok := ic.GetRing(key)
 	if !ok {
 		log.Printf("new measurement: %s\n", key)
 		atomic.AddInt64(&ic.stats.PointsWrittenFail, 1)
-		// TODO: new measurement?
 		return
 	}
 
-	// don't block here for a lont time, we just have one worker.
+	node, err := r.ring.GetNode(string(point.Key()))
+	if err != nil {
+		log.Println("E:", err)
+		return
+	}
+
+	i, err := strconv.Atoi(node)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	bs := r.n2bs[i]
+	// don't block here for a long time, we just have one worker.
 	for _, b := range bs {
-		err = b.Write(line)
+		err = b.Write([]byte(point.String()))
 		if err != nil {
 			log.Printf("cluster write fail: %s\n", key)
 			atomic.AddInt64(&ic.stats.PointsWrittenFail, 1)
@@ -475,7 +593,7 @@ func (ic *InfluxCluster) WriteRow(line []byte) {
 	return
 }
 
-func (ic *InfluxCluster) Write(p []byte) (err error) {
+func (ic *InfluxCluster) Write(p []byte, precision string) (err error) {
 	atomic.AddInt64(&ic.stats.WriteRequests, 1)
 	defer func(start time.Time) {
 		atomic.AddInt64(&ic.stats.WriteRequestDuration, time.Since(start).Nanoseconds())
@@ -483,23 +601,17 @@ func (ic *InfluxCluster) Write(p []byte) (err error) {
 
 	buf := bytes.NewBuffer(p)
 
-	var line []byte
-	for {
-		line, err = buf.ReadBytes('\n')
-		switch err {
-		default:
-			log.Printf("error: %s\n", err)
-			atomic.AddInt64(&ic.stats.WriteRequestsFail, 1)
-			return
-		case io.EOF, nil:
-			err = nil
+	points, err := models.ParsePointsWithPrecision(buf.Bytes(), time.Now().UTC(), precision)
+	if err != nil && len(points) == 0 {
+		if err.Error() == "EOF" {
+			return nil
 		}
-
-		if len(line) == 0 {
-			break
-		}
-
-		ic.WriteRow(line)
+		log.Printf("error: %s\n", err)
+		atomic.AddInt64(&ic.stats.WriteRequestsFail, 1)
+		return
+	}
+	for _, point := range points {
+		ic.WriteRow(point)
 	}
 
 	ic.lock.RLock()

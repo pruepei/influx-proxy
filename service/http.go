@@ -132,10 +132,14 @@ func (hs *HttpService) HandlerWrite(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	err = hs.ic.Write(p)
+	err = hs.ic.Write(p, req.URL.Query().Get("precision"))
 	if err == nil {
 		w.WriteHeader(204)
+	} else {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
 	}
+
 	if hs.ic.WriteTracing != 0 {
 		log.Printf("Write body received by handler: %s,the client is %s\n", p, req.RemoteAddr)
 	}
