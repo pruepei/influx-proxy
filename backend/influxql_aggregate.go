@@ -1,22 +1,48 @@
 package backend
 
 import (
+	"encoding/json"
+
+	"log"
+
 	"github.com/influxdata/influxdb/influxql"
 )
 
 // InfluxQLAggregate is aim to re-organize the result of basic query statement
-func InfluxQLAggregate(results []influxql.Result, operator influxql.Token) (resultFinal influxql.Result, err error) {
+func InfluxQLAggregate(resultFromBackends [][]byte) (resultAggr []byte, err error) {
 
-	if operator.Precedence() == 0 {
-		return
+	// []byte -> influxql.Result -> models.Row
+	for _, resultFromBackend := range resultFromBackends {
+		result, err := unmarshalJSON(resultFromBackend)
+		if err != nil {
+			log.Println(err)
+			break
+		}
+		for _, r := range result {
+			for _, row := range r.Series {
+				log.Println(row.Columns)
+				log.Println(row.Name)
+				log.Println(row.Tags)
+				log.Println(row.Values)
+			}
+		}
+	}
+	//
+	// 2: 聚合策略 regenerator 来获取
+
+	return resultAggr, nil
+}
+
+// UnmarshalJSON decodes the data from http response to influxql.Result.
+func unmarshalJSON(b []byte) ([]*influxql.Result, error) {
+	var o struct {
+		Results []*influxql.Result `json:"results,omitempty"`
+		Err     string             `json:"error,omitempty"`
 	}
 
-	// todo
-	//
-	// 从 backend 拉来来的是 json 过后的结果
-	// 需要从 json 逆向回 influx/query 中的 Result，不足的字段丢弃
-	// 进一步逆回 influx/models.Rows 这样 row 应该对应着二次生成的 QL
-	// 重新组合 row 放回 influx 原来的处理路径。
-
-	return resultFinal, nil
+	err := json.Unmarshal(b, &o)
+	if err != nil {
+		return nil, err
+	}
+	return o.Results, nil
 }
