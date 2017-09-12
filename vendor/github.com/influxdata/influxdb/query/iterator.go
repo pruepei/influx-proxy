@@ -1,4 +1,4 @@
-package influxql
+package query
 
 import (
 	"errors"
@@ -7,25 +7,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/influxdata/influxdb/models"
+	"regexp"
 
 	"github.com/gogo/protobuf/proto"
-	internal "github.com/influxdata/influxdb/influxql/internal"
+	"github.com/influxdata/influxdb/influxql"
+	internal "github.com/influxdata/influxdb/query/internal"
 )
 
 // ErrUnknownCall is returned when operating on an unknown function call.
 var ErrUnknownCall = errors.New("unknown call")
 
 const (
-	// MinTime is used as the minimum time value when computing an unbounded range.
-	// This time is one less than the MinNanoTime so that the first minimum
-	// time can be used as a sentinel value to signify that it is the default
-	// value rather than explicitly set by the user.
-	MinTime = models.MinNanoTime - 1
-
-	// MaxTime is used as the maximum time value when computing an unbounded range.
-	// This time is 2262-04-11 23:47:16.854775806 +0000 UTC
-	MaxTime = models.MaxNanoTime
+	// secToNs is the number of nanoseconds in a second.
+	secToNs = int64(time.Second)
 )
 
 // Iterator represents a generic interface for all Iterators.
@@ -70,24 +64,24 @@ func (a Iterators) filterNonNil() []Iterator {
 // castType determines what type to cast the set of iterators to.
 // An iterator type is chosen using this hierarchy:
 //   float > integer > string > boolean
-func (a Iterators) castType() DataType {
+func (a Iterators) castType() influxql.DataType {
 	if len(a) == 0 {
-		return Unknown
+		return influxql.Unknown
 	}
 
-	typ := DataType(Boolean)
+	typ := influxql.DataType(influxql.Boolean)
 	for _, input := range a {
 		switch input.(type) {
 		case FloatIterator:
 			// Once a float iterator is found, short circuit the end.
-			return Float
+			return influxql.Float
 		case IntegerIterator:
-			if typ > Integer {
-				typ = Integer
+			if typ > influxql.Integer {
+				typ = influxql.Integer
 			}
 		case StringIterator:
-			if typ > String {
-				typ = String
+			if typ > influxql.String {
+				typ = influxql.String
 			}
 		case BooleanIterator:
 			// Boolean is the lowest type.
@@ -102,13 +96,13 @@ func (a Iterators) castType() DataType {
 func (a Iterators) cast() interface{} {
 	typ := a.castType()
 	switch typ {
-	case Float:
+	case influxql.Float:
 		return newFloatIterators(a)
-	case Integer:
+	case influxql.Integer:
 		return newIntegerIterators(a)
-	case String:
+	case influxql.String:
 		return newStringIterators(a)
-	case Boolean:
+	case influxql.Boolean:
 		return newBooleanIterators(a)
 	}
 	return a
@@ -118,7 +112,7 @@ func (a Iterators) cast() interface{} {
 // A sorted merge iterator or a merge iterator can be used based on opt.
 func (a Iterators) Merge(opt IteratorOptions) (Iterator, error) {
 	// Check if this is a call expression.
-	call, ok := opt.Expr.(*Call)
+	call, ok := opt.Expr.(*influxql.Call)
 
 	// Merge into a single iterator.
 	if !ok && opt.MergeSorted() {
@@ -146,7 +140,7 @@ func (a Iterators) Merge(opt IteratorOptions) (Iterator, error) {
 
 	// When merging the count() function, use sum() to sum the counted points.
 	if call.Name == "count" {
-		opt.Expr = &Call{
+		opt.Expr = &influxql.Call{
 			Name: "sum",
 			Args: call.Args,
 		}
@@ -284,7 +278,7 @@ func NewLimitIterator(input Iterator, opt IteratorOptions) Iterator {
 // NewFilterIterator returns an iterator that filters the points based on the
 // condition. This iterator is not nearly as efficient as filtering points
 // within the query engine and is only used when filtering subqueries.
-func NewFilterIterator(input Iterator, cond Expr, opt IteratorOptions) Iterator {
+func NewFilterIterator(input Iterator, cond influxql.Expr, opt IteratorOptions) Iterator {
 	if input == nil {
 		return nil
 	}
@@ -326,7 +320,7 @@ func NewDedupeIterator(input Iterator) Iterator {
 }
 
 // NewFillIterator returns an iterator that fills in missing points in an aggregate.
-func NewFillIterator(input Iterator, expr Expr, opt IteratorOptions) Iterator {
+func NewFillIterator(input Iterator, expr influxql.Expr, opt IteratorOptions) Iterator {
 	switch input := input.(type) {
 	case FloatIterator:
 		return newFloatFillIterator(input, expr, opt)
@@ -353,7 +347,7 @@ func NewIntervalIterator(input Iterator, opt IteratorOptions) Iterator {
 	case BooleanIterator:
 		return newBooleanIntervalIterator(input, opt)
 	default:
-		panic(fmt.Sprintf("unsupported fill iterator type: %T", input))
+		panic(fmt.Sprintf("unsupported interval iterator type: %T", input))
 	}
 }
 
@@ -396,7 +390,7 @@ type AuxIterator interface {
 	Iterator
 
 	// Auxilary iterator
-	Iterator(name string, typ DataType) Iterator
+	Iterator(name string, typ influxql.DataType) Iterator
 
 	// Start starts writing to the created iterators.
 	Start()
@@ -424,9 +418,9 @@ func NewAuxIterator(input Iterator, opt IteratorOptions) AuxIterator {
 
 // auxIteratorField represents an auxilary field within an AuxIterator.
 type auxIteratorField struct {
-	name string     // field name
-	typ  DataType   // detected data type
-	itrs []Iterator // auxillary iterators
+	name string            // field name
+	typ  influxql.DataType // detected data type
+	itrs []Iterator        // auxillary iterators
 	mu   sync.Mutex
 	opt  IteratorOptions
 }
@@ -469,29 +463,29 @@ func (a *auxIteratorFields) close() {
 }
 
 // iterator creates a new iterator for a named auxilary field.
-func (a *auxIteratorFields) iterator(name string, typ DataType) Iterator {
+func (a *auxIteratorFields) iterator(name string, typ influxql.DataType) Iterator {
 	for _, f := range a.fields {
 		// Skip field if it's name doesn't match.
 		// Exit if no points were received by the iterator.
-		if f.name != name || (typ != Unknown && f.typ != typ) {
+		if f.name != name || (typ != influxql.Unknown && f.typ != typ) {
 			continue
 		}
 
 		// Create channel iterator by data type.
 		switch f.typ {
-		case Float:
+		case influxql.Float:
 			itr := &floatChanIterator{cond: sync.NewCond(&sync.Mutex{})}
 			f.append(itr)
 			return itr
-		case Integer:
+		case influxql.Integer:
 			itr := &integerChanIterator{cond: sync.NewCond(&sync.Mutex{})}
 			f.append(itr)
 			return itr
-		case String, Tag:
+		case influxql.String, influxql.Tag:
 			itr := &stringChanIterator{cond: sync.NewCond(&sync.Mutex{})}
 			f.append(itr)
 			return itr
-		case Boolean:
+		case influxql.Boolean:
 			itr := &booleanChanIterator{cond: sync.NewCond(&sync.Mutex{})}
 			f.append(itr)
 			return itr
@@ -507,7 +501,10 @@ func (a *auxIteratorFields) iterator(name string, typ DataType) Iterator {
 func (a *auxIteratorFields) send(p Point) (ok bool) {
 	values := p.aux()
 	for i, f := range a.fields {
-		v := values[i]
+		var v interface{}
+		if i < len(values) {
+			v = values[i]
+		}
 
 		tags := p.tags()
 		tags = tags.Subset(a.dimensions)
@@ -609,58 +606,55 @@ func DrainIterators(itrs []Iterator) {
 }
 
 // NewReaderIterator returns an iterator that streams from a reader.
-func NewReaderIterator(r io.Reader, typ DataType, stats IteratorStats) Iterator {
+func NewReaderIterator(r io.Reader, typ influxql.DataType, stats IteratorStats) Iterator {
 	switch typ {
-	case Float:
+	case influxql.Float:
 		return newFloatReaderIterator(r, stats)
-	case Integer:
+	case influxql.Integer:
 		return newIntegerReaderIterator(r, stats)
-	case String:
+	case influxql.String:
 		return newStringReaderIterator(r, stats)
-	case Boolean:
+	case influxql.Boolean:
 		return newBooleanReaderIterator(r, stats)
 	default:
-		return &nilFloatIterator{}
+		return &nilFloatReaderIterator{r: r}
 	}
 }
 
 // IteratorCreator is an interface to create Iterators.
 type IteratorCreator interface {
 	// Creates a simple iterator for use in an InfluxQL query.
-	CreateIterator(source *Measurement, opt IteratorOptions) (Iterator, error)
-}
+	CreateIterator(source *influxql.Measurement, opt IteratorOptions) (Iterator, error)
 
-// FieldMapper returns the data type for the field inside of the measurement.
-type FieldMapper interface {
-	FieldDimensions(m *Measurement) (fields map[string]DataType, dimensions map[string]struct{}, err error)
-
-	TypeMapper
+	// Determines the potential cost for creating an iterator.
+	IteratorCost(source *influxql.Measurement, opt IteratorOptions) (IteratorCost, error)
 }
 
 // IteratorOptions is an object passed to CreateIterator to specify creation options.
 type IteratorOptions struct {
 	// Expression to iterate for.
 	// This can be VarRef or a Call.
-	Expr Expr
+	Expr influxql.Expr
 
 	// Auxilary tags or values to also retrieve for the point.
-	Aux []VarRef
+	Aux []influxql.VarRef
 
 	// Data sources from which to receive data. This is only used for encoding
 	// measurements over RPC and is no longer used in the open source version.
-	Sources []Source
+	Sources []influxql.Source
 
 	// Group by interval and tags.
 	Interval   Interval
 	Dimensions []string            // The final dimensions of the query (stays the same even in subqueries).
 	GroupBy    map[string]struct{} // Dimensions to group points by in intermediate iterators.
+	Location   *time.Location
 
 	// Fill options.
-	Fill      FillOption
+	Fill      influxql.FillOption
 	FillValue interface{}
 
 	// Condition to filter by.
-	Condition Expr
+	Condition influxql.Expr
 
 	// Time range for the iterator.
 	StartTime int64
@@ -675,6 +669,9 @@ type IteratorOptions struct {
 	// Limits the number of series.
 	SLimit, SOffset int
 
+	// Removes the measurement name. Useful for meta queries.
+	StripName bool
+
 	// Removes duplicate rows from raw queries.
 	Dedupe bool
 
@@ -687,34 +684,31 @@ type IteratorOptions struct {
 	// If this channel is set and is closed, the iterator should try to exit
 	// and close as soon as possible.
 	InterruptCh <-chan struct{}
+
+	// Authorizer can limit acccess to data
+	Authorizer Authorizer
 }
 
 // newIteratorOptionsStmt creates the iterator options from stmt.
-func newIteratorOptionsStmt(stmt *SelectStatement, sopt *SelectOptions) (opt IteratorOptions, err error) {
+func newIteratorOptionsStmt(stmt *influxql.SelectStatement, sopt SelectOptions) (opt IteratorOptions, err error) {
 	// Determine time range from the condition.
-	startTime, endTime, err := TimeRange(stmt.Condition)
+	valuer := &influxql.NowValuer{Location: stmt.Location}
+	condition, timeRange, err := influxql.ConditionExpr(stmt.Condition, valuer)
 	if err != nil {
 		return IteratorOptions{}, err
 	}
 
-	if !startTime.IsZero() {
-		opt.StartTime = startTime.UnixNano()
+	if !timeRange.Min.IsZero() {
+		opt.StartTime = timeRange.Min.UnixNano()
 	} else {
-		if sopt != nil {
-			opt.StartTime = sopt.MinTime.UnixNano()
-		} else {
-			opt.StartTime = MinTime
-		}
+		opt.StartTime = influxql.MinTime
 	}
-	if !endTime.IsZero() {
-		opt.EndTime = endTime.UnixNano()
+	if !timeRange.Max.IsZero() {
+		opt.EndTime = timeRange.Max.UnixNano()
 	} else {
-		if sopt != nil {
-			opt.EndTime = sopt.MaxTime.UnixNano()
-		} else {
-			opt.EndTime = MaxTime
-		}
+		opt.EndTime = influxql.MaxTime
 	}
+	opt.Location = stmt.Location
 
 	// Determine group by interval.
 	interval, err := stmt.GroupByInterval()
@@ -732,41 +726,42 @@ func newIteratorOptionsStmt(stmt *SelectStatement, sopt *SelectOptions) (opt Ite
 	}
 	opt.Interval.Duration = interval
 
-	// Determine if the input for this select call must be ordered.
-	opt.Ordered = stmt.IsRawQuery
+	// Always request an ordered output for the top level iterators.
+	// The emitter will always emit points as ordered.
+	opt.Ordered = true
 
 	// Determine dimensions.
 	opt.GroupBy = make(map[string]struct{}, len(opt.Dimensions))
 	for _, d := range stmt.Dimensions {
-		if d, ok := d.Expr.(*VarRef); ok {
+		if d, ok := d.Expr.(*influxql.VarRef); ok {
 			opt.Dimensions = append(opt.Dimensions, d.Val)
 			opt.GroupBy[d.Val] = struct{}{}
 		}
 	}
 
-	opt.Condition = stmt.Condition
+	opt.Condition = condition
 	opt.Ascending = stmt.TimeAscending()
 	opt.Dedupe = stmt.Dedupe
+	opt.StripName = stmt.StripName
 
 	opt.Fill, opt.FillValue = stmt.Fill, stmt.FillValue
-	if opt.Fill == NullFill && stmt.Target != nil {
+	if opt.Fill == influxql.NullFill && stmt.Target != nil {
 		// Set the fill option to none if a target has been given.
 		// Null values will get ignored when being written to the target
 		// so fill(null) wouldn't write any null values to begin with.
-		opt.Fill = NoFill
+		opt.Fill = influxql.NoFill
 	}
 	opt.Limit, opt.Offset = stmt.Limit, stmt.Offset
 	opt.SLimit, opt.SOffset = stmt.SLimit, stmt.SOffset
-	if sopt != nil {
-		opt.MaxSeriesN = sopt.MaxSeriesN
-		opt.InterruptCh = sopt.InterruptCh
-	}
+	opt.MaxSeriesN = sopt.MaxSeriesN
+	opt.InterruptCh = sopt.InterruptCh
+	opt.Authorizer = sopt.Authorizer
 
 	return opt, nil
 }
 
-func newIteratorOptionsSubstatement(stmt *SelectStatement, opt IteratorOptions) (IteratorOptions, error) {
-	subOpt, err := newIteratorOptionsStmt(stmt, nil)
+func newIteratorOptionsSubstatement(stmt *influxql.SelectStatement, opt IteratorOptions) (IteratorOptions, error) {
+	subOpt, err := newIteratorOptionsStmt(stmt, SelectOptions{})
 	if err != nil {
 		return IteratorOptions{}, err
 	}
@@ -788,26 +783,27 @@ func newIteratorOptionsSubstatement(stmt *SelectStatement, opt IteratorOptions) 
 	subOpt.SLimit += opt.SLimit
 	subOpt.SOffset += opt.SOffset
 
+	// Propagate the ordering from the parent query.
+	subOpt.Ascending = opt.Ascending
+
 	// If the inner query uses a null fill option, switch it to none so we
 	// don't hit an unnecessary penalty from the fill iterator. Null values
 	// will end up getting stripped by an outer query anyway so there's no
 	// point in having them here. We still need all other types of fill
 	// iterators because they can affect the result of the outer query.
-	if subOpt.Fill == NullFill {
-		subOpt.Fill = NoFill
+	if subOpt.Fill == influxql.NullFill {
+		subOpt.Fill = influxql.NoFill
 	}
 
-	// Determine if the input to this iterator needs to be ordered so it outputs
-	// the correct order to the outer query.
-	interval, err := stmt.GroupByInterval()
-	if err != nil {
-		return IteratorOptions{}, err
-	}
-	subOpt.Ordered = opt.Ordered && (interval == 0 && stmt.HasSelector())
+	// Inherit the ordering method from the outer query.
+	subOpt.Ordered = opt.Ordered
 
 	// If there is no interval for this subquery, but the outer query has an
 	// interval, inherit the parent interval.
-	if interval == 0 {
+	interval, err := stmt.GroupByInterval()
+	if err != nil {
+		return IteratorOptions{}, err
+	} else if interval == 0 {
 		subOpt.Interval = opt.Interval
 	}
 	return subOpt, nil
@@ -836,26 +832,81 @@ func (opt IteratorOptions) Window(t int64) (start, end int64) {
 	// Subtract the offset to the time so we calculate the correct base interval.
 	t -= int64(opt.Interval.Offset)
 
+	// Retrieve the zone offset for the start time.
+	var zone int64
+	if opt.Location != nil {
+		_, zone = opt.Zone(t)
+	}
+
 	// Truncate time by duration.
-	dt := t % int64(opt.Interval.Duration)
+	dt := (t + zone) % int64(opt.Interval.Duration)
 	if dt < 0 {
 		// Negative modulo rounds up instead of down, so offset
 		// with the duration.
 		dt += int64(opt.Interval.Duration)
 	}
-	t -= dt
 
-	// Apply the offset.
-	start = t + int64(opt.Interval.Offset)
-	end = start + int64(opt.Interval.Duration)
+	// Find the start time.
+	if influxql.MinTime+dt >= t {
+		start = influxql.MinTime
+	} else {
+		start = t - dt
+	}
+
+	// Look for the start offset again because the first time may have been
+	// after the offset switch. Now that we are at midnight in UTC, we can
+	// lookup the zone offset again to get the real starting offset.
+	if opt.Location != nil {
+		_, startOffset := opt.Zone(start)
+		// Do not adjust the offset if the offset change is greater than or
+		// equal to the duration.
+		if o := zone - startOffset; o != 0 && abs(o) < int64(opt.Interval.Duration) {
+			start += o
+		}
+	}
+	start += int64(opt.Interval.Offset)
+
+	// Find the end time.
+	if dt := int64(opt.Interval.Duration) - dt; influxql.MaxTime-dt <= t {
+		end = influxql.MaxTime
+	} else {
+		end = t + dt
+	}
+
+	// Retrieve the zone offset for the end time.
+	if opt.Location != nil {
+		_, endOffset := opt.Zone(end)
+		// Adjust the end time if the offset is different from the start offset.
+		// Only apply the offset if it is smaller than the duration.
+		// This prevents going back in time and creating time windows
+		// that don't make any sense.
+		if o := zone - endOffset; o != 0 && abs(o) < int64(opt.Interval.Duration) {
+			// If the offset is greater than 0, that means we are adding time.
+			// Added time goes into the previous interval because the clocks
+			// move backwards. If the offset is less than 0, then we are skipping
+			// time. Skipped time comes after the switch so if we have a time
+			// interval that lands on the switch, it comes from the next
+			// interval and not the current one. For this reason, we need to know
+			// when the actual switch happens by seeing if the time switch is within
+			// the current interval. We calculate the zone offset with the offset
+			// and see if the value is the same. If it is, we apply the
+			// offset.
+			if o > 0 {
+				end += o
+			} else if _, z := opt.Zone(end + o); z == endOffset {
+				end += o
+			}
+		}
+	}
+	end += int64(opt.Interval.Offset)
 	return
 }
 
 // DerivativeInterval returns the time interval for the derivative function.
 func (opt IteratorOptions) DerivativeInterval() Interval {
 	// Use the interval on the derivative() call, if specified.
-	if expr, ok := opt.Expr.(*Call); ok && len(expr.Args) == 2 {
-		return Interval{Duration: expr.Args[1].(*DurationLiteral).Val}
+	if expr, ok := opt.Expr.(*influxql.Call); ok && len(expr.Args) == 2 {
+		return Interval{Duration: expr.Args[1].(*influxql.DurationLiteral).Val}
 	}
 
 	// Otherwise use the group by interval, if specified.
@@ -869,11 +920,21 @@ func (opt IteratorOptions) DerivativeInterval() Interval {
 // ElapsedInterval returns the time interval for the elapsed function.
 func (opt IteratorOptions) ElapsedInterval() Interval {
 	// Use the interval on the elapsed() call, if specified.
-	if expr, ok := opt.Expr.(*Call); ok && len(expr.Args) == 2 {
-		return Interval{Duration: expr.Args[1].(*DurationLiteral).Val}
+	if expr, ok := opt.Expr.(*influxql.Call); ok && len(expr.Args) == 2 {
+		return Interval{Duration: expr.Args[1].(*influxql.DurationLiteral).Val}
 	}
 
 	return Interval{Duration: time.Nanosecond}
+}
+
+// IntegralInterval returns the time interval for the integral function.
+func (opt IteratorOptions) IntegralInterval() Interval {
+	// Use the interval on the integral() call, if specified.
+	if expr, ok := opt.Expr.(*influxql.Call); ok && len(expr.Args) == 2 {
+		return Interval{Duration: expr.Args[1].(*influxql.DurationLiteral).Val}
+	}
+
+	return Interval{Duration: time.Second}
 }
 
 // GetDimensions retrieves the dimensions for this query.
@@ -886,6 +947,17 @@ func (opt IteratorOptions) GetDimensions() []string {
 		return dimensions
 	}
 	return opt.Dimensions
+}
+
+// Zone returns the zone information for the given time. The offset is in nanoseconds.
+func (opt *IteratorOptions) Zone(ns int64) (string, int64) {
+	if opt.Location == nil {
+		return "", 0
+	}
+
+	t := time.Unix(0, ns).In(opt.Location)
+	name, offset := t.Zone()
+	return name, secToNs * int64(offset)
 }
 
 // MarshalBinary encodes opt into a binary format.
@@ -921,6 +993,7 @@ func encodeIteratorOptions(opt *IteratorOptions) *internal.IteratorOptions {
 		Offset:     proto.Int64(int64(opt.Offset)),
 		SLimit:     proto.Int64(int64(opt.SLimit)),
 		SOffset:    proto.Int64(int64(opt.SOffset)),
+		StripName:  proto.Bool(opt.StripName),
 		Dedupe:     proto.Bool(opt.Dedupe),
 		MaxSeriesN: proto.Int64(int64(opt.MaxSeriesN)),
 		Ordered:    proto.Bool(opt.Ordered),
@@ -929,6 +1002,11 @@ func encodeIteratorOptions(opt *IteratorOptions) *internal.IteratorOptions {
 	// Set expression, if set.
 	if opt.Expr != nil {
 		pb.Expr = proto.String(opt.Expr.String())
+	}
+
+	// Set the location, if set.
+	if opt.Location != nil {
+		pb.Location = proto.String(opt.Location.String())
 	}
 
 	// Convert and encode aux fields as variable references.
@@ -952,7 +1030,7 @@ func encodeIteratorOptions(opt *IteratorOptions) *internal.IteratorOptions {
 	if opt.Sources != nil {
 		sources := make([]*internal.Measurement, len(opt.Sources))
 		for i, source := range opt.Sources {
-			mm := source.(*Measurement)
+			mm := source.(*influxql.Measurement)
 			sources[i] = encodeMeasurement(mm)
 		}
 		pb.Sources = sources
@@ -975,7 +1053,7 @@ func decodeIteratorOptions(pb *internal.IteratorOptions) (*IteratorOptions, erro
 	opt := &IteratorOptions{
 		Interval:   decodeInterval(pb.GetInterval()),
 		Dimensions: pb.GetDimensions(),
-		Fill:       FillOption(pb.GetFill()),
+		Fill:       influxql.FillOption(pb.GetFill()),
 		FillValue:  pb.GetFillValue(),
 		StartTime:  pb.GetStartTime(),
 		EndTime:    pb.GetEndTime(),
@@ -984,6 +1062,7 @@ func decodeIteratorOptions(pb *internal.IteratorOptions) (*IteratorOptions, erro
 		Offset:     int(pb.GetOffset()),
 		SLimit:     int(pb.GetSLimit()),
 		SOffset:    int(pb.GetSOffset()),
+		StripName:  pb.GetStripName(),
 		Dedupe:     pb.GetDedupe(),
 		MaxSeriesN: int(pb.GetMaxSeriesN()),
 		Ordered:    pb.GetOrdered(),
@@ -991,29 +1070,37 @@ func decodeIteratorOptions(pb *internal.IteratorOptions) (*IteratorOptions, erro
 
 	// Set expression, if set.
 	if pb.Expr != nil {
-		expr, err := ParseExpr(pb.GetExpr())
+		expr, err := influxql.ParseExpr(pb.GetExpr())
 		if err != nil {
 			return nil, err
 		}
 		opt.Expr = expr
 	}
 
+	if pb.Location != nil {
+		loc, err := time.LoadLocation(pb.GetLocation())
+		if err != nil {
+			return nil, err
+		}
+		opt.Location = loc
+	}
+
 	// Convert and decode variable references.
 	if fields := pb.GetFields(); fields != nil {
-		opt.Aux = make([]VarRef, len(fields))
+		opt.Aux = make([]influxql.VarRef, len(fields))
 		for i, ref := range fields {
 			opt.Aux[i] = decodeVarRef(ref)
 		}
 	} else {
-		opt.Aux = make([]VarRef, len(pb.GetAux()))
+		opt.Aux = make([]influxql.VarRef, len(pb.GetAux()))
 		for i, name := range pb.GetAux() {
-			opt.Aux[i] = VarRef{Val: name}
+			opt.Aux[i] = influxql.VarRef{Val: name}
 		}
 	}
 
 	// Convert and decode sources to measurements.
 	if pb.Sources != nil {
-		sources := make([]Source, len(pb.GetSources()))
+		sources := make([]influxql.Source, len(pb.GetSources()))
 		for i, source := range pb.GetSources() {
 			mm, err := decodeMeasurement(source)
 			if err != nil {
@@ -1035,7 +1122,7 @@ func decodeIteratorOptions(pb *internal.IteratorOptions) (*IteratorOptions, erro
 
 	// Set condition, if set.
 	if pb.Condition != nil {
-		expr, err := ParseExpr(pb.GetCondition())
+		expr, err := influxql.ParseExpr(pb.GetCondition())
 		if err != nil {
 			return nil, err
 		}
@@ -1045,28 +1132,60 @@ func decodeIteratorOptions(pb *internal.IteratorOptions) (*IteratorOptions, erro
 	return opt, nil
 }
 
+func encodeMeasurement(mm *influxql.Measurement) *internal.Measurement {
+	pb := &internal.Measurement{
+		Database:        proto.String(mm.Database),
+		RetentionPolicy: proto.String(mm.RetentionPolicy),
+		Name:            proto.String(mm.Name),
+		IsTarget:        proto.Bool(mm.IsTarget),
+	}
+	if mm.Regex != nil {
+		pb.Regex = proto.String(mm.Regex.Val.String())
+	}
+	return pb
+}
+
+func decodeMeasurement(pb *internal.Measurement) (*influxql.Measurement, error) {
+	mm := &influxql.Measurement{
+		Database:        pb.GetDatabase(),
+		RetentionPolicy: pb.GetRetentionPolicy(),
+		Name:            pb.GetName(),
+		IsTarget:        pb.GetIsTarget(),
+	}
+
+	if pb.Regex != nil {
+		regex, err := regexp.Compile(pb.GetRegex())
+		if err != nil {
+			return nil, fmt.Errorf("invalid binary measurement regex: value=%q, err=%s", pb.GetRegex(), err)
+		}
+		mm.Regex = &influxql.RegexLiteral{Val: regex}
+	}
+
+	return mm, nil
+}
+
 // selectInfo represents an object that stores info about select fields.
 type selectInfo struct {
-	calls map[*Call]struct{}
-	refs  map[*VarRef]struct{}
+	calls map[*influxql.Call]struct{}
+	refs  map[*influxql.VarRef]struct{}
 }
 
 // newSelectInfo creates a object with call and var ref info from stmt.
-func newSelectInfo(stmt *SelectStatement) *selectInfo {
+func newSelectInfo(stmt *influxql.SelectStatement) *selectInfo {
 	info := &selectInfo{
-		calls: make(map[*Call]struct{}),
-		refs:  make(map[*VarRef]struct{}),
+		calls: make(map[*influxql.Call]struct{}),
+		refs:  make(map[*influxql.VarRef]struct{}),
 	}
-	Walk(info, stmt.Fields)
+	influxql.Walk(info, stmt.Fields)
 	return info
 }
 
-func (v *selectInfo) Visit(n Node) Visitor {
+func (v *selectInfo) Visit(n influxql.Node) influxql.Visitor {
 	switch n := n.(type) {
-	case *Call:
+	case *influxql.Call:
 		v.calls[n] = struct{}{}
 		return nil
-	case *VarRef:
+	case *influxql.VarRef:
 		v.refs[n] = struct{}{}
 		return nil
 	}
@@ -1076,13 +1195,13 @@ func (v *selectInfo) Visit(n Node) Visitor {
 // FindSelector returns a selector from the selectInfo. This will only
 // return a selector if the Call is a selector and it's the only function
 // in the selectInfo.
-func (v *selectInfo) FindSelector() *Call {
+func (v *selectInfo) FindSelector() *influxql.Call {
 	if len(v.calls) != 1 {
 		return nil
 	}
 
 	for s := range v.calls {
-		if IsSelector(s) {
+		if influxql.IsSelector(s) {
 			return s
 		}
 	}
@@ -1112,17 +1231,17 @@ func decodeInterval(pb *internal.Interval) Interval {
 	}
 }
 
-func encodeVarRef(ref VarRef) *internal.VarRef {
+func encodeVarRef(ref influxql.VarRef) *internal.VarRef {
 	return &internal.VarRef{
 		Val:  proto.String(ref.Val),
 		Type: proto.Int32(int32(ref.Type)),
 	}
 }
 
-func decodeVarRef(pb *internal.VarRef) VarRef {
-	return VarRef{
+func decodeVarRef(pb *internal.VarRef) influxql.VarRef {
+	return influxql.VarRef{
 		Val:  pb.GetVal(),
-		Type: DataType(pb.GetType()),
+		Type: influxql.DataType(pb.GetType()),
 	}
 }
 
@@ -1131,6 +1250,20 @@ type nilFloatIterator struct{}
 func (*nilFloatIterator) Stats() IteratorStats       { return IteratorStats{} }
 func (*nilFloatIterator) Close() error               { return nil }
 func (*nilFloatIterator) Next() (*FloatPoint, error) { return nil, nil }
+
+type nilFloatReaderIterator struct {
+	r io.Reader
+}
+
+func (*nilFloatReaderIterator) Stats() IteratorStats { return IteratorStats{} }
+func (itr *nilFloatReaderIterator) Close() error {
+	if r, ok := itr.r.(io.ReadCloser); ok {
+		itr.r = nil
+		return r.Close()
+	}
+	return nil
+}
+func (*nilFloatReaderIterator) Next() (*FloatPoint, error) { return nil, nil }
 
 // integerFloatTransformIterator executes a function to modify an existing point for every
 // output of the input iterator.
@@ -1211,6 +1344,45 @@ func decodeIteratorStats(pb *internal.IteratorStats) IteratorStats {
 	}
 }
 
+// IteratorCost contains statistics retrieved for explaining what potential
+// cost may be incurred by instantiating an iterator.
+type IteratorCost struct {
+	// The total number of shards that are touched by this query.
+	NumShards int64
+
+	// The total number of non-unique series that are accessed by this query.
+	// This number matches the number of cursors created by the query since
+	// one cursor is created for every series.
+	NumSeries int64
+
+	// CachedValues returns the number of cached values that may be read by this
+	// query.
+	CachedValues int64
+
+	// The total number of non-unique files that may be accessed by this query.
+	// This will count the number of files accessed by each series so files
+	// will likely be double counted.
+	NumFiles int64
+
+	// The number of blocks that had the potential to be accessed.
+	BlocksRead int64
+
+	// The amount of data that can be potentially read.
+	BlockSize int64
+}
+
+// Combine combines the results of two IteratorCost structures into one.
+func (c IteratorCost) Combine(other IteratorCost) IteratorCost {
+	return IteratorCost{
+		NumShards:    c.NumShards + other.NumShards,
+		NumSeries:    c.NumSeries + other.NumSeries,
+		CachedValues: c.CachedValues + other.CachedValues,
+		NumFiles:     c.NumFiles + other.NumFiles,
+		BlocksRead:   c.BlocksRead + other.BlocksRead,
+		BlockSize:    c.BlockSize + other.BlockSize,
+	}
+}
+
 // floatFastDedupeIterator outputs unique points where the point has a single aux field.
 type floatFastDedupeIterator struct {
 	input FloatIterator
@@ -1269,3 +1441,10 @@ type reverseStringSlice []string
 func (p reverseStringSlice) Len() int           { return len(p) }
 func (p reverseStringSlice) Less(i, j int) bool { return p[i] > p[j] }
 func (p reverseStringSlice) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
+
+func abs(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}

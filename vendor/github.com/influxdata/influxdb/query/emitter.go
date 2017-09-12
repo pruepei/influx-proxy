@@ -1,4 +1,4 @@
-package influxql
+package query
 
 import (
 	"fmt"
@@ -20,6 +20,12 @@ type Emitter struct {
 	// The columns to attach to each row.
 	Columns []string
 
+	// Overridden measurement name to emit.
+	EmitName string
+
+	// The time zone location.
+	Location *time.Location
+
 	// Removes the "time" column from output.
 	// Used for meta queries where time does not apply.
 	OmitTime bool
@@ -32,6 +38,7 @@ func NewEmitter(itrs []Iterator, ascending bool, chunkSize int) *Emitter {
 		itrs:      itrs,
 		ascending: ascending,
 		chunkSize: chunkSize,
+		Location:  time.UTC,
 	}
 }
 
@@ -126,16 +133,19 @@ func (e *Emitter) loadBuf() (t int64, name string, tags Tags, err error) {
 		}
 
 		// Update range values if higher and emitter is in time descending order.
-		if (itrName < name) || (itrName == name && itrTags.ID() < tags.ID()) || (itrName == name && itrTags.ID() == tags.ID() && itrTime < t) {
+		if (itrName > name) || (itrName == name && itrTags.ID() > tags.ID()) || (itrName == name && itrTags.ID() == tags.ID() && itrTime > t) {
 			t, name, tags = itrTime, itrName, itrTags
 		}
 	}
-
 	return
 }
 
 // createRow creates a new row attached to the emitter.
 func (e *Emitter) createRow(name string, tags Tags, values []interface{}) {
+	if e.EmitName != "" {
+		name = e.EmitName
+	}
+
 	e.tags = tags
 	e.row = &models.Row{
 		Name:    name,
@@ -155,7 +165,7 @@ func (e *Emitter) readAt(t int64, name string, tags Tags) []interface{} {
 
 	values := make([]interface{}, len(e.itrs)+offset)
 	if !e.OmitTime {
-		values[0] = time.Unix(0, t).UTC()
+		values[0] = time.Unix(0, t).In(e.Location)
 	}
 	e.readInto(t, name, tags, values[offset:])
 	return values

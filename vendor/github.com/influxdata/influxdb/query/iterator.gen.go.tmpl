@@ -1,4 +1,4 @@
-package influxql
+package query
 
 import (
 	"container/heap"
@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/gogo/protobuf/proto"
-	internal "github.com/influxdata/influxdb/influxql/internal"
+	"github.com/influxdata/influxdb/influxql"
+	internal "github.com/influxdata/influxdb/query/internal"
 )
 
 // DefaultStatsInterval is the default value for IteratorEncoder.StatsInterval.
-const DefaultStatsInterval = 10 * time.Second
+const DefaultStatsInterval = time.Second
 
 {{with $types := .}}{{range $k := $types}}
 
@@ -392,6 +393,12 @@ func (itr *{{$k.name}}SortedMergeIterator) pop() (*{{$k.Name}}Point, error) {
 }
 
 // {{$k.name}}SortedMergeHeap represents a heap of {{$k.name}}SortedMergeHeapItems.
+// Items are sorted with the following priority:
+//     - By their measurement name;
+//     - By their tag keys/values;
+//     - By time; or
+//     - By their Aux field values.
+//
 type {{$k.name}}SortedMergeHeap struct {
 	opt   IteratorOptions
 	items []*{{$k.name}}SortedMergeHeapItem
@@ -408,15 +415,53 @@ func (h *{{$k.name}}SortedMergeHeap) Less(i, j int) bool {
 		} else if xTags, yTags := x.Tags.Subset(h.opt.Dimensions), y.Tags.Subset(h.opt.Dimensions); !xTags.Equals(&yTags) {
 			return xTags.ID() < yTags.ID()
 		}
-		return x.Time < y.Time
+
+		if x.Time != y.Time{
+			return x.Time < y.Time
+		}
+
+		if len(x.Aux) > 0 && len(x.Aux) == len(y.Aux) {
+			for i := 0; i < len(x.Aux); i++ {
+				v1, ok1 := x.Aux[i].(string)
+				v2, ok2 := y.Aux[i].(string)
+				if !ok1 || !ok2 {
+					// Unsupported types used in Aux fields. Maybe they
+					// need to be added here?
+					return false
+				} else if v1 == v2 {
+					continue
+				}
+				return v1 < v2
+			}
+		}
+		return false // Times and/or Aux fields are equal.
 	}
 
 	if x.Name != y.Name {
 		return x.Name > y.Name
-  } else if xTags, yTags := x.Tags.Subset(h.opt.Dimensions), y.Tags.Subset(h.opt.Dimensions); !xTags.Equals(&yTags) {
+	} else if xTags, yTags := x.Tags.Subset(h.opt.Dimensions), y.Tags.Subset(h.opt.Dimensions); !xTags.Equals(&yTags) {
 		return xTags.ID() > yTags.ID()
 	}
-	return x.Time > y.Time
+	
+	if x.Time != y.Time{
+		return x.Time > y.Time
+	}
+
+	if len(x.Aux) > 0 && len(x.Aux) == len(y.Aux) {
+		for i := 0; i < len(x.Aux); i++ {
+			v1, ok1 := x.Aux[i].(string)
+			v2, ok2 := y.Aux[i].(string)
+			if !ok1 || !ok2 {
+				// Unsupported types used in Aux fields. Maybe they
+				// need to be added here?
+				return false
+			} else if v1 == v2 {
+				continue
+			}
+			return v1 > v2
+		}
+	}
+	return false // Times and/or Aux fields are equal.
 }
 
 func (h *{{$k.name}}SortedMergeHeap) Push(x interface{}) {
@@ -451,7 +496,7 @@ type {{$k.name}}ParallelIterator struct {
 func new{{$k.Name}}ParallelIterator(input {{$k.Name}}Iterator) *{{$k.name}}ParallelIterator {
 	itr := &{{$k.name}}ParallelIterator{
 		input:   input,
-		ch:      make(chan {{$k.name}}PointError, 1),
+		ch:      make(chan {{$k.name}}PointError, 256),
 		closing: make(chan struct{}),
 	}
 	itr.wg.Add(1)
@@ -486,6 +531,9 @@ func (itr *{{$k.name}}ParallelIterator) monitor()  {
 	for {
 		// Read next point.
 		p, err := itr.input.Next()
+		if p != nil {
+			p = p.Clone()
+		}
 
 		select {
 		case <-itr.closing:
@@ -568,16 +616,17 @@ type {{$k.name}}FillIterator struct {
 	opt       IteratorOptions
 
 	window struct {
-		name string
-		tags Tags
-		time int64
+		name   string
+		tags   Tags
+		time   int64
+		offset int64
 	}
 }
 
-func new{{$k.Name}}FillIterator(input {{$k.Name}}Iterator, expr Expr, opt IteratorOptions) *{{$k.name}}FillIterator {
-	if opt.Fill == NullFill {
-		if expr, ok := expr.(*Call); ok && expr.Name == "count" {
-			opt.Fill = NumberFill
+func new{{$k.Name}}FillIterator(input {{$k.Name}}Iterator, expr influxql.Expr, opt IteratorOptions) *{{$k.name}}FillIterator {
+	if opt.Fill == influxql.NullFill {
+		if expr, ok := expr.(*influxql.Call); ok && expr.Name == "count" {
+			opt.Fill = influxql.NumberFill
 			opt.FillValue = {{$k.Zero}}
 		}
 	}
@@ -617,6 +666,9 @@ func (itr *{{$k.name}}FillIterator) Next() (*{{$k.Name}}Point, error) {
 		}
 		itr.window.name, itr.window.tags = p.Name, p.Tags
 		itr.window.time = itr.startTime
+		if itr.opt.Location != nil {
+			_, itr.window.offset = itr.opt.Zone(itr.window.time)
+		}
 		itr.init = true
 	}
 
@@ -652,6 +704,9 @@ func (itr *{{$k.name}}FillIterator) Next() (*{{$k.Name}}Point, error) {
 		// Set the new interval.
 		itr.window.name, itr.window.tags = p.Name, p.Tags
 		itr.window.time = itr.startTime
+		if itr.opt.Location != nil {
+			_, itr.window.offset = itr.opt.Zone(itr.window.time)
+		}
 		itr.prev = {{$k.Name}}Point{Nil: true}
 		break
 	}
@@ -670,14 +725,13 @@ func (itr *{{$k.name}}FillIterator) Next() (*{{$k.Name}}Point, error) {
 		}
 
 		switch itr.opt.Fill {
-		case LinearFill:
+		case influxql.LinearFill:
 			{{- if or (eq $k.Name "Float") (eq $k.Name "Integer")}}
 			if !itr.prev.Nil {
 				next, err := itr.input.peek()
 				if err != nil {
 					return nil, err
-				}
-				if next != nil {
+				} else if next != nil && next.Name == itr.window.name && next.Tags.ID() == itr.window.tags.ID() {
 					interval := int64(itr.opt.Interval.Duration)
 					start := itr.window.time / interval
 					p.Value = linear{{$k.Name}}(start, itr.prev.Time/interval, next.Time/interval, itr.prev.Value, next.Value)
@@ -690,11 +744,11 @@ func (itr *{{$k.name}}FillIterator) Next() (*{{$k.Name}}Point, error) {
 			{{else}}
 			fallthrough
 			{{- end}}
-		case NullFill:
+		case influxql.NullFill:
 			p.Nil = true
-		case NumberFill:
+		case influxql.NumberFill:
 			p.Value = castTo{{$k.Name}}(itr.opt.FillValue)
-		case PreviousFill:
+		case influxql.PreviousFill:
 			if !itr.prev.Nil {
 				p.Value = itr.prev.Value
 				p.Nil = itr.prev.Nil
@@ -710,9 +764,21 @@ func (itr *{{$k.name}}FillIterator) Next() (*{{$k.Name}}Point, error) {
 	// as there may be lingering points with the same timestamp in the previous
 	// window.
 	if itr.opt.Ascending {
-		itr.window.time = p.Time + int64(itr.opt.Interval.Duration)
+		itr.window.time += int64(itr.opt.Interval.Duration)
 	} else {
-		itr.window.time = p.Time - int64(itr.opt.Interval.Duration)
+		itr.window.time -= int64(itr.opt.Interval.Duration)
+	}
+
+	// Check to see if we have passed over an offset change and adjust the time
+	// to account for this new offset.
+	if itr.opt.Location != nil {
+		if _, offset := itr.opt.Zone(itr.window.time - 1); offset != itr.window.offset {
+			diff := itr.window.offset - offset
+			if abs(diff) < int64(itr.opt.Interval.Duration) {
+				itr.window.time += diff
+			}
+			itr.window.offset = offset
+		}
 	}
 	return p, nil
 }
@@ -738,7 +804,7 @@ func (itr *{{$k.name}}IntervalIterator) Next() (*{{$k.Name}}Point, error) {
 	p.Time, _ = itr.opt.Window(p.Time)
 	// If we see the minimum allowable time, set the time to zero so we don't
 	// break the default returned time for aggregate queries without times.
-	if p.Time == MinTime {
+	if p.Time == influxql.MinTime {
 		p.Time = 0
 	}
 	return p, nil
@@ -766,7 +832,7 @@ func (itr *{{$k.name}}InterruptIterator) Next() (*{{$k.Name}}Point, error) {
 	if itr.count & 0xFF == 0xFF {
 		select {
 		case <-itr.closing:
-			return nil, nil
+			return nil, itr.Close()
 		default:
 			// Reset iterator count to zero and fall through to emit the next point.
 			itr.count = 0
@@ -865,7 +931,7 @@ func (itr *{{$k.name}}AuxIterator) Next() (*{{$k.Name}}Point, error) {
 	p := <-itr.output
 	return p.point, p.err
 }
-func (itr *{{$k.name}}AuxIterator) Iterator(name string, typ DataType) Iterator    { return itr.fields.iterator(name, typ) }
+func (itr *{{$k.name}}AuxIterator) Iterator(name string, typ influxql.DataType) Iterator    { return itr.fields.iterator(name, typ) }
 
 func (itr *{{.name}}AuxIterator) stream() {
 	for {
@@ -996,6 +1062,7 @@ type {{$k.name}}Reduce{{$v.Name}}Iterator struct {
 	dims     []string
 	opt      IteratorOptions
 	points   []{{$v.Name}}Point
+	keepTags bool
 }
 
 func new{{$k.Name}}Reduce{{$v.Name}}Iterator(input {{$k.Name}}Iterator, opt IteratorOptions, createFn func() ({{$k.Name}}PointAggregator, {{$v.Name}}PointEmitter)) *{{$k.name}}Reduce{{$v.Name}}Iterator {
@@ -1042,7 +1109,13 @@ type {{$k.name}}Reduce{{$v.Name}}Point struct {
 // The previous value for the dimension is passed to fn.
 func (itr *{{$k.name}}Reduce{{$v.Name}}Iterator) reduce() ([]{{$v.Name}}Point, error) {
 	// Calculate next window.
-	var startTime, endTime int64
+	var (
+		startTime, endTime int64
+		window             struct {
+			name string
+			tags string
+		}
+	)
 	for {
 		p, err := itr.input.Next()
 		if err != nil || p == nil {
@@ -1054,6 +1127,7 @@ func (itr *{{$k.name}}Reduce{{$v.Name}}Iterator) reduce() ([]{{$v.Name}}Point, e
 		// Unread the point so it can be processed.
 		itr.input.unread(p)
 		startTime, endTime = itr.opt.Window(p.Time)
+		window.name, window.tags = p.Name, p.Tags.Subset(itr.opt.Dimensions).ID()
 		break
 	}
 
@@ -1068,13 +1142,24 @@ func (itr *{{$k.name}}Reduce{{$v.Name}}Iterator) reduce() ([]{{$v.Name}}Point, e
 			break
 		} else if curr.Nil {
 			continue
+		} else if curr.Name != window.name {
+			itr.input.unread(curr)
+			break
 		}
-		tags := curr.Tags.Subset(itr.dims)
 
-		id := curr.Name
-		if len(tags.m) > 0 {
-			id += "\x00" + tags.ID()
+		// Ensure this point is within the same final window.
+		if curr.Name != window.name {
+			itr.input.unread(curr)
+			break
+		} else if tags := curr.Tags.Subset(itr.opt.Dimensions); tags.ID() != window.tags {
+			itr.input.unread(curr)
+			break
 		}
+
+		// Retrieve the tags on this point for this level of the query.
+		// This may be different than the bucket dimensions.
+		tags := curr.Tags.Subset(itr.dims)
+		id := tags.ID()
 
 		// Retrieve the aggregator for this name/tag combination or create one.
 		rp := m[id]
@@ -1091,24 +1176,27 @@ func (itr *{{$k.name}}Reduce{{$v.Name}}Iterator) reduce() ([]{{$v.Name}}Point, e
 		rp.Aggregator.Aggregate{{$k.Name}}(curr)
 	}
 
-	// Reverse sort points by name & tag.
+	// Reverse sort points by name & tag if our output is supposed to be ordered.
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
 	}
-	if len(keys) > 1 {
+	if len(keys) > 1 && itr.opt.Ordered {
 		sort.Sort(reverseStringSlice(keys))
 	}
 
 	// Assume the points are already sorted until proven otherwise.
 	sortedByTime := true
+	// Emit the points for each name & tag combination.
 	a := make([]{{$v.Name}}Point, 0, len(m))
 	for _, k := range keys {
 		rp := m[k]
 		points := rp.Emitter.Emit()
 		for i := len(points)-1; i >= 0; i-- {
 			points[i].Name = rp.Name
-			points[i].Tags = rp.Tags
+			if !itr.keepTags {
+				points[i].Tags = rp.Tags
+			}
 			// Set the points time to the interval time if the reducer didn't provide one.
 			if points[i].Time == ZeroTime {
 				points[i].Time = startTime
@@ -1177,7 +1265,32 @@ func (itr *{{$k.name}}Stream{{$v.Name}}Iterator) reduce() ([]{{$v.Name}}Point, e
 	for {
 		// Read next point.
 		curr, err := itr.input.Next()
-		if curr == nil || err != nil {
+		if curr == nil {
+			// Close all of the aggregators to flush any remaining points to emit.
+			var points []{{$v.Name}}Point
+			for _, rp := range itr.m {
+				if aggregator, ok := rp.Aggregator.(io.Closer); ok {
+					if err := aggregator.Close(); err != nil {
+						return nil, err
+					}
+
+					pts := rp.Emitter.Emit()
+					if len(pts) == 0 {
+						continue
+					}
+
+					for i := range pts {
+						pts[i].Name = rp.Name
+						pts[i].Tags = rp.Tags
+					}
+					points = append(points, pts...)
+				}
+			}
+
+			// Eliminate the aggregators and emitters.
+			itr.m = nil
+			return points, nil
+		} else if err != nil {
 			return nil, err
 		} else if curr.Nil {
 			continue
@@ -1230,9 +1343,9 @@ type {{$k.name}}{{if ne $k.Name $v.Name}}{{$v.Name}}{{end}}ExprIterator struct {
 func new{{$k.Name}}{{if ne $k.Name $v.Name}}{{$v.Name}}{{end}}ExprIterator(left, right {{$k.Name}}Iterator, opt IteratorOptions, fn func(a, b {{$k.Type}}) {{$v.Type}}) *{{$k.name}}{{if ne $k.Name $v.Name}}{{$v.Name}}{{end}}ExprIterator {
 	var points []{{$k.Name}}Point
 	switch opt.Fill {
-	case NullFill, PreviousFill:
+	case influxql.NullFill, influxql.PreviousFill:
 		points = []{{$k.Name}}Point{ {Nil: true}, {Nil: true} }
-	case NumberFill:
+	case influxql.NumberFill:
 		value := castTo{{$k.Name}}(opt.FillValue)
 		points = []{{$k.Name}}Point{ {Value: value}, {Value: value} }
 	}
@@ -1241,7 +1354,7 @@ func new{{$k.Name}}{{if ne $k.Name $v.Name}}{{$v.Name}}{{end}}ExprIterator(left,
 		right:     newBuf{{$k.Name}}Iterator(right),
 		points:    points,
 		fn:        fn,
-		storePrev: opt.Fill == PreviousFill,
+		storePrev: opt.Fill == influxql.PreviousFill,
 	}
 }
 
@@ -1259,47 +1372,39 @@ func (itr *{{$k.name}}{{if ne $k.Name $v.Name}}{{$v.Name}}{{end}}ExprIterator) C
 
 func (itr *{{$k.name}}{{if ne $k.Name $v.Name}}{{$v.Name}}{{end}}ExprIterator) Next() (*{{$v.Name}}Point, error) {
 	for {
-		a, err := itr.left.Next()
-		if err != nil {
-			return nil, err
-		}
-		b, err := itr.right.Next()
-		if err != nil {
+		a, b, err := itr.next()
+		if err != nil || (a == nil && b == nil) {
 			return nil, err
 		}
 
-		if a == nil && b == nil {
-			return nil, nil
-		} else if itr.points == nil && (a == nil || b == nil ) {
-			return nil, nil
+		// If any of these are nil and we are using fill(none), skip these points.
+		if (a == nil || a.Nil || b == nil || b.Nil) && itr.points == nil {
+			continue
 		}
 
-		if a != nil && b != nil {
-			if a.Time > b.Time {
-				itr.left.unread(a)
-				a = nil
-			} else if a.Time < b.Time {
-				itr.right.unread(b)
-				b = nil
-			}
-		}
-
-		if a == nil || a.Nil {
-			if itr.points == nil {
-				continue
-			}
+		// If one of the two points is nil, we need to fill it with a fake nil
+		// point that has the same name, tags, and time as the other point.
+		// There should never be a time when both of these are nil.
+		if a == nil {
 			p := *b
-			p.Value = itr.points[0].Value
-			p.Nil = itr.points[0].Nil
 			a = &p
-		} else if b == nil || b.Nil {
-			if itr.points == nil {
-				continue
-			}
+			a.Value = {{$k.Nil}}
+			a.Nil = true
+		} else if b == nil {
 			p := *a
-			p.Value = itr.points[1].Value
-			p.Nil = itr.points[1].Nil
 			b = &p
+			b.Value = {{$k.Nil}}
+			b.Nil = true
+		}
+
+		// If a value is nil, use the fill values if the fill value is non-nil.
+		if a.Nil && !itr.points[0].Nil {
+			a.Value = itr.points[0].Value
+			a.Nil = false
+		}
+		if b.Nil && !itr.points[1].Nil {
+			b.Value = itr.points[1].Value
+			b.Nil = false
 		}
 
 		if itr.storePrev {
@@ -1328,6 +1433,48 @@ func (itr *{{$k.name}}{{if ne $k.Name $v.Name}}{{$v.Name}}{{end}}ExprIterator) N
 		return p, nil
 {{end}}
 	}
+}
+
+// next returns the next points within each iterator. If the iterators are
+// uneven, it organizes them so only matching points are returned.
+func (itr *{{$k.name}}{{if ne $k.Name $v.Name}}{{$v.Name}}{{end}}ExprIterator) next() (a, b *{{$k.Name}}Point, err error) {
+	// Retrieve the next value for both the left and right.
+	a, err = itr.left.Next()
+	if err != nil {
+		return nil, nil, err
+	}
+	b, err = itr.right.Next()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// If we have a point from both, make sure that they match each other.
+	if a != nil && b != nil {
+		if a.Name > b.Name {
+			itr.left.unread(a)
+			return nil, b, nil
+		} else if a.Name < b.Name {
+			itr.right.unread(b)
+			return a, nil, nil
+		}
+
+		if ltags, rtags := a.Tags.ID(), b.Tags.ID(); ltags > rtags {
+			itr.left.unread(a)
+			return nil, b, nil
+		} else if ltags < rtags {
+			itr.right.unread(b)
+			return a, nil, nil
+		}
+
+		if a.Time > b.Time {
+			itr.left.unread(a)
+			return nil, b, nil
+		} else if a.Time < b.Time {
+			itr.right.unread(b)
+			return a, nil, nil
+		}
+	}
+	return a, b, nil
 }
 
 // {{$k.name}}{{if ne $k.Name $v.Name}}{{$v.Name}}{{end}}ExprFunc creates or modifies a point by combining two
@@ -1404,30 +1551,94 @@ type {{$k.name}}DedupeIterator struct {
 	m     map[string]struct{} // lookup of points already sent
 }
 
+type {{$k.name}}IteratorMapper struct {
+	e         *Emitter
+	buf       []interface{}
+	driver    IteratorMap   // which iterator to use for the primary value, can be nil
+	fields    []IteratorMap // which iterator to use for an aux field
+	point     {{$k.Name}}Point
+}
+
+func new{{$k.Name}}IteratorMapper(itrs []Iterator, driver IteratorMap, fields []IteratorMap, opt IteratorOptions) *{{$k.name}}IteratorMapper {
+	e := NewEmitter(itrs, opt.Ascending, 0)
+	e.OmitTime = true
+	return &{{$k.name}}IteratorMapper{
+		e:         e,
+		buf:       make([]interface{}, len(itrs)),
+		driver:    driver,
+		fields:    fields,
+		point:  {{$k.Name}}Point{
+			Aux: make([]interface{}, len(fields)),
+		},
+	}
+}
+
+func (itr *{{$k.name}}IteratorMapper) Next() (*{{$k.Name}}Point, error) {
+	t, name, tags, err := itr.e.loadBuf()
+	if err != nil || t == ZeroTime {
+		return nil, err
+	}
+	itr.point.Time = t
+	itr.point.Name = name
+	itr.point.Tags = tags
+
+	itr.e.readInto(t, name, tags, itr.buf)
+	if itr.driver != nil {
+	if v := itr.driver.Value(tags, itr.buf); v != nil {
+			if v, ok := v.({{$k.Type}}); ok {
+				itr.point.Value = v
+				itr.point.Nil = false
+			} else {
+				itr.point.Value = {{$k.Nil}}
+				itr.point.Nil = true
+			}
+		} else {
+			itr.point.Value = {{$k.Nil}}
+			itr.point.Nil = true
+		}
+	}
+	for i, f := range itr.fields {
+		itr.point.Aux[i] = f.Value(tags, itr.buf)
+	}
+	return &itr.point, nil
+}
+
+func (itr *{{$k.name}}IteratorMapper) Stats() IteratorStats {
+	stats := IteratorStats{}
+	for _, itr := range itr.e.itrs {
+		stats.Add(itr.Stats())
+	}
+	return stats
+}
+
+func (itr *{{$k.name}}IteratorMapper) Close() error {
+	return itr.e.Close()
+}
+
 type {{$k.name}}FilterIterator struct {
 	input {{$k.Name}}Iterator
-	cond  Expr
+	cond  influxql.Expr
 	opt   IteratorOptions
 	m     map[string]interface{}
 }
 
-func new{{$k.Name}}FilterIterator(input {{$k.Name}}Iterator, cond Expr, opt IteratorOptions) {{$k.Name}}Iterator {
+func new{{$k.Name}}FilterIterator(input {{$k.Name}}Iterator, cond influxql.Expr, opt IteratorOptions) {{$k.Name}}Iterator {
 	// Strip out time conditions from the WHERE clause.
 	// TODO(jsternberg): This should really be done for us when creating the IteratorOptions struct.
-	n := RewriteFunc(CloneExpr(cond), func(n Node) Node {
+	n := influxql.RewriteFunc(influxql.CloneExpr(cond), func(n influxql.Node) influxql.Node {
 		switch n := n.(type) {
-		case *BinaryExpr:
+		case *influxql.BinaryExpr:
 			if n.LHS.String() == "time" {
-				return &BooleanLiteral{Val: true}
+				return &influxql.BooleanLiteral{Val: true}
 			}
 		}
 		return n
 	})
 
-	cond, _ = n.(Expr)
+	cond, _ = n.(influxql.Expr)
 	if cond == nil {
 		return input
-	} else if n, ok := cond.(*BooleanLiteral); ok && n.Val {
+	} else if n, ok := cond.(*influxql.BooleanLiteral); ok && n.Val {
 		return input
 	}
 
@@ -1456,7 +1667,7 @@ func (itr *{{$k.name}}FilterIterator) Next() (*{{$k.Name}}Point, error) {
 			itr.m[k] = v
 		}
 
-		if !EvalBool(itr.cond, itr.m) {
+		if !influxql.EvalBool(itr.cond, itr.m) {
 			continue
 		}
 		return p, nil

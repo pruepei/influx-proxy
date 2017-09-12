@@ -1,10 +1,11 @@
-package influxql
+package query
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 
+	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/models"
 )
 
@@ -17,13 +18,13 @@ const (
 // composed of multiple individual series that share a set of tag attributes.
 type TagSet struct {
 	Tags       map[string]string
-	Filters    []Expr
+	Filters    []influxql.Expr
 	SeriesKeys []string
 	Key        []byte
 }
 
 // AddFilter adds a series-level filter to the Tagset.
-func (t *TagSet) AddFilter(key string, filter Expr) {
+func (t *TagSet) AddFilter(key string, filter influxql.Expr) {
 	t.SeriesKeys = append(t.SeriesKeys, key)
 	t.Filters = append(t.Filters, filter)
 }
@@ -33,6 +34,33 @@ func (t *TagSet) Less(i, j int) bool { return t.SeriesKeys[i] < t.SeriesKeys[j] 
 func (t *TagSet) Swap(i, j int) {
 	t.SeriesKeys[i], t.SeriesKeys[j] = t.SeriesKeys[j], t.SeriesKeys[i]
 	t.Filters[i], t.Filters[j] = t.Filters[j], t.Filters[i]
+}
+
+// Reverse reverses the order of series keys and filters in the TagSet.
+func (t *TagSet) Reverse() {
+	for i, j := 0, len(t.Filters)-1; i < j; i, j = i+1, j-1 {
+		t.Filters[i], t.Filters[j] = t.Filters[j], t.Filters[i]
+		t.SeriesKeys[i], t.SeriesKeys[j] = t.SeriesKeys[j], t.SeriesKeys[i]
+	}
+}
+
+// LimitTagSets returns a tag set list with SLIMIT and SOFFSET applied.
+func LimitTagSets(a []*TagSet, slimit, soffset int) []*TagSet {
+	// Ignore if no limit or offset is specified.
+	if slimit == 0 && soffset == 0 {
+		return a
+	}
+
+	// If offset is beyond the number of tag sets then return nil.
+	if soffset > len(a) {
+		return nil
+	}
+
+	// Clamp limit to the max number of tag sets.
+	if soffset+slimit > len(a) {
+		slimit = len(a) - soffset
+	}
+	return a[soffset : soffset+slimit]
 }
 
 // Message represents a user-facing message to be included with the result.

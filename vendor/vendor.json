@@ -5,44 +5,56 @@
 		{
 			"checksumSHA1": "6ZxSmrIx3Jd15aou16oG0HPylP4=",
 			"path": "github.com/gogo/protobuf/proto",
-			"revision": "9df9efe4c742f1a2bfdedf1c3b6902fc6e814c6b",
-			"revisionTime": "2017-05-16T20:20:29Z"
+			"revision": "30433562cfbf487fe1df7cd26c7bab168d2f14d0",
+			"revisionTime": "2017-04-25T17:14:30Z"
 		},
 		{
 			"checksumSHA1": "2SyY8LpzxtFHo9yLZp4n1SdC65A=",
 			"path": "github.com/influxdata/influxdb/client/v2",
-			"revision": "6d94714e834092e0eff876a7a9616c14c54d876d",
-			"revisionTime": "2017-08-10T02:32:10Z"
+			"revision": "0e81743f33572e7b8f6399692305683217d5010a",
+			"revisionTime": "2017-09-11T14:07:42Z"
 		},
 		{
-			"checksumSHA1": "kO4mnPxoxmJ3wi5lskx/yZ4RqTI=",
+			"checksumSHA1": "uX2nCseNYUSbXZDamX4i2LtBU88=",
 			"path": "github.com/influxdata/influxdb/influxql",
-			"revision": "b7bb7e8359642b6e071735b50ae41f5eb343fd42",
-			"revisionTime": "2017-01-24T03:01:48Z"
+			"revision": "0e81743f33572e7b8f6399692305683217d5010a",
+			"revisionTime": "2017-09-11T14:07:42Z"
 		},
 		{
-			"checksumSHA1": "mYI+crvSLYjTYT0rkc2KeXeARno=",
+			"checksumSHA1": "83Ay29VSbrSJSF3HQuqjKP/yK+E=",
 			"path": "github.com/influxdata/influxdb/influxql/internal",
-			"revision": "b7bb7e8359642b6e071735b50ae41f5eb343fd42",
-			"revisionTime": "2017-01-24T03:01:48Z"
+			"revision": "0e81743f33572e7b8f6399692305683217d5010a",
+			"revisionTime": "2017-09-11T14:07:42Z"
 		},
 		{
 			"checksumSHA1": "xQDplgpQauZj3yrSoyn5cQiMvvk=",
 			"path": "github.com/influxdata/influxdb/influxql/neldermead",
-			"revision": "b7bb7e8359642b6e071735b50ae41f5eb343fd42",
-			"revisionTime": "2017-01-24T03:01:48Z"
+			"revision": "0e81743f33572e7b8f6399692305683217d5010a",
+			"revisionTime": "2017-09-11T14:07:42Z"
 		},
 		{
-			"checksumSHA1": "+xKQqEHpLnfoZU1uX7DH+dd4Q+g=",
+			"checksumSHA1": "/gXwvTXF7zn5GDNxGHzBVm7/emQ=",
 			"path": "github.com/influxdata/influxdb/models",
-			"revision": "6d94714e834092e0eff876a7a9616c14c54d876d",
-			"revisionTime": "2017-08-10T02:32:10Z"
+			"revision": "0e81743f33572e7b8f6399692305683217d5010a",
+			"revisionTime": "2017-09-11T14:07:42Z"
 		},
 		{
 			"checksumSHA1": "H/J/qLqzUONXIecHHKtVZmxJZZA=",
 			"path": "github.com/influxdata/influxdb/pkg/escape",
-			"revision": "6d94714e834092e0eff876a7a9616c14c54d876d",
-			"revisionTime": "2017-08-10T02:32:10Z"
+			"revision": "0e81743f33572e7b8f6399692305683217d5010a",
+			"revisionTime": "2017-09-11T14:07:42Z"
+		},
+		{
+			"checksumSHA1": "Bu6vfxQZzGQaEUwWbEEI3a2VBOo=",
+			"path": "github.com/influxdata/influxdb/query",
+			"revision": "0e81743f33572e7b8f6399692305683217d5010a",
+			"revisionTime": "2017-09-11T14:07:42Z"
+		},
+		{
+			"checksumSHA1": "KnPzTvqf+CGegLZExuSOHk+H2+w=",
+			"path": "github.com/influxdata/influxdb/query/internal",
+			"revision": "0e81743f33572e7b8f6399692305683217d5010a",
+			"revisionTime": "2017-09-11T14:07:42Z"
 		},
 		{
 			"checksumSHA1": "T/K4wj498YcF8ehQmu9m9hwniv4=",
@@ -57,14 +69,14 @@
 			"revisionTime": "2015-08-27T09:08:50Z"
 		},
 		{
-			"checksumSHA1": "A1Pds5dXP3dODsmIPqzj1N8BxY0=",
+			"checksumSHA1": "NOIORNvcbiu9ksBXlVe57DToOVQ=",
 			"path": "github.com/uber-go/atomic",
-			"revision": "a85b15eff9f2092b1cf20d4fb804899dd0d5e422",
-			"revisionTime": "2017-05-09T18:29:30Z"
+			"revision": "74ca5ec650841aee9f289dce76e928313a37cbc6",
+			"revisionTime": "2016-12-13T18:45:32Z"
 		},
 		{
-			"checksumSHA1": "XgkPE7dCxq9yV0njAox7THScVOE=",
-			"path": "go.uber.org/zap",
+			"checksumSHA1": "YmLV6tJBvk48ECv+mGdhB9UTVCM=",
+			"path": "github.com/uber-go/zap",
 			"revision": "fbae0281ffd546fa6d1959fec6075ac5da7fb577",
 			"revisionTime": "2016-11-30T08:11:23Z"
 		},

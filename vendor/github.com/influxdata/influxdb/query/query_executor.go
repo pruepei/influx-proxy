@@ -1,15 +1,18 @@
-package influxql
+package query
 
 import (
 	"errors"
 	"fmt"
+	"os"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/models"
-	"go.uber.org/zap"
+	"github.com/uber-go/zap"
 )
 
 var (
@@ -36,17 +39,19 @@ var (
 
 // Statistics for the QueryExecutor
 const (
-	statQueriesActive          = "queriesActive"   // Number of queries currently being executed
+	statQueriesActive          = "queriesActive"   // Number of queries currently being executed.
 	statQueriesExecuted        = "queriesExecuted" // Number of queries that have been executed (started).
 	statQueriesFinished        = "queriesFinished" // Number of queries that have finished.
-	statQueryExecutionDuration = "queryDurationNs" // Total (wall) time spent executing queries
+	statQueryExecutionDuration = "queryDurationNs" // Total (wall) time spent executing queries.
+	statRecoveredPanics        = "recoveredPanics" // Number of panics recovered by Query Executor.
+
+	// PanicCrashEnv is the environment variable that, when set, will prevent
+	// the handler from recovering any panics.
+	PanicCrashEnv = "INFLUXDB_PANIC_CRASH"
 )
 
 // ErrDatabaseNotFound returns a database not found error for the given database name.
 func ErrDatabaseNotFound(name string) error { return fmt.Errorf("database not found: %s", name) }
-
-// ErrMeasurementNotFound returns a measurement not found error for the given measurement name.
-func ErrMeasurementNotFound(name string) error { return fmt.Errorf("measurement not found: %s", name) }
 
 // ErrMaxSelectPointsLimitExceeded is an error when a query hits the maximum number of points.
 func ErrMaxSelectPointsLimitExceeded(n, limit int) error {
@@ -59,10 +64,48 @@ func ErrMaxConcurrentQueriesLimitExceeded(n, limit int) error {
 	return fmt.Errorf("max-concurrent-queries limit exceeded(%d, %d)", n, limit)
 }
 
+// Authorizer reports whether certain operations are authorized.
+type Authorizer interface {
+	// AuthorizeDatabase indicates whether the given Privilege is authorized on the database with the given name.
+	AuthorizeDatabase(p influxql.Privilege, name string) bool
+
+	// AuthorizeQuery returns an error if the query cannot be executed
+	AuthorizeQuery(database string, query *influxql.Query) error
+
+	// AuthorizeSeriesRead determines if a series is authorized for reading
+	AuthorizeSeriesRead(database string, measurement []byte, tags models.Tags) bool
+
+	// AuthorizeSeriesWrite determines if a series is authorized for writing
+	AuthorizeSeriesWrite(database string, measurement []byte, tags models.Tags) bool
+}
+
+// OpenAuthorizer is the Authorizer used when authorization is disabled.
+// It allows all operations.
+type OpenAuthorizer struct{}
+
+var _ Authorizer = OpenAuthorizer{}
+
+// AuthorizeDatabase returns true to allow any operation on a database.
+func (_ OpenAuthorizer) AuthorizeDatabase(influxql.Privilege, string) bool { return true }
+
+func (_ OpenAuthorizer) AuthorizeSeriesRead(database string, measurement []byte, tags models.Tags) bool {
+	return true
+}
+
+func (_ OpenAuthorizer) AuthorizeSeriesWrite(database string, measurement []byte, tags models.Tags) bool {
+	return true
+}
+
+func (_ OpenAuthorizer) AuthorizeQuery(_ string, _ *influxql.Query) error { return nil }
+
 // ExecutionOptions contains the options for executing a query.
 type ExecutionOptions struct {
 	// The database the query is running against.
 	Database string
+
+	// How to determine whether the query is allowed to execute,
+	// what resources can be returned in SHOW queries, etc.
+	Authorizer Authorizer
 
 	// The requested maximum number of points to return in each result.
 	ChunkSize int
@@ -132,14 +175,14 @@ func (ctx *ExecutionContext) Send(result *Result) error {
 type StatementExecutor interface {
 	// ExecuteStatement executes a statement. Results should be sent to the
 	// results channel in the ExecutionContext.
-	ExecuteStatement(stmt Statement, ctx ExecutionContext) error
+	ExecuteStatement(stmt influxql.Statement, ctx ExecutionContext) error
 }
 
 // StatementNormalizer normalizes a statement before it is executed.
 type StatementNormalizer interface {
 	// NormalizeStatement adds a default database and policy to the
 	// measurements in the statement.
-	NormalizeStatement(stmt Statement, database string) error
+	NormalizeStatement(stmt influxql.Statement, database string) error
 }
 
 // QueryExecutor executes every statement in an Query.
@@ -173,6 +216,7 @@ type QueryStatistics struct {
 	ExecutedQueries        int64
 	FinishedQueries        int64
 	QueryExecutionDuration int64
+	RecoveredPanics        int64
 }
 
 // Statistics returns statistics for periodic monitoring.
@@ -185,6 +229,7 @@ func (e *QueryExecutor) Statistics(tags map[string]string) []models.Statistic {
 			statQueriesExecuted:        atomic.LoadInt64(&e.stats.ExecutedQueries),
 			statQueriesFinished:        atomic.LoadInt64(&e.stats.FinishedQueries),
 			statQueryExecutionDuration: atomic.LoadInt64(&e.stats.QueryExecutionDuration),
+			statRecoveredPanics:        atomic.LoadInt64(&e.stats.RecoveredPanics),
 		},
 	}}
 }
@@ -202,13 +247,13 @@ func (e *QueryExecutor) WithLogger(log zap.Logger) {
 }
 
 // ExecuteQuery executes each statement within a query.
-func (e *QueryExecutor) ExecuteQuery(query *Query, opt ExecutionOptions, closing chan struct{}) <-chan *Result {
+func (e *QueryExecutor) ExecuteQuery(query *influxql.Query, opt ExecutionOptions, closing chan struct{}) <-chan *Result {
 	results := make(chan *Result)
 	go e.executeQuery(query, opt, closing, results)
 	return results
 }
 
-func (e *QueryExecutor) executeQuery(query *Query, opt ExecutionOptions, closing <-chan struct{}, results chan *Result) {
+func (e *QueryExecutor) executeQuery(query *influxql.Query, opt ExecutionOptions, closing <-chan struct{}, results chan *Result) {
 	defer close(results)
 	defer e.recover(query, results)
 
@@ -249,7 +294,7 @@ LOOP:
 		// If a default database wasn't passed in by the caller, check the statement.
 		defaultDB := opt.Database
 		if defaultDB == "" {
-			if s, ok := stmt.(HasDefaultDatabase); ok {
+			if s, ok := stmt.(influxql.HasDefaultDatabase); ok {
 				defaultDB = s.DefaultDatabase()
 			}
 		}
@@ -257,11 +302,11 @@ LOOP:
 		// Do not let queries manually use the system measurements. If we find
 		// one, return an error. This prevents a person from using the
 		// measurement incorrectly and causing a panic.
-		if stmt, ok := stmt.(*SelectStatement); ok {
+		if stmt, ok := stmt.(*influxql.SelectStatement); ok {
 			for _, s := range stmt.Sources {
 				switch s := s.(type) {
-				case *Measurement:
-					if IsSystemName(s.Name) {
+				case *influxql.Measurement:
+					if influxql.IsSystemName(s.Name) {
 						command := "the appropriate meta command"
 						switch s.Name {
 						case "_fieldKeys":
@@ -286,7 +331,7 @@ LOOP:
 
 		// Rewrite statements, if necessary.
 		// This can occur on meta read statements which convert to SELECT statements.
-		newStmt, err := RewriteStatement(stmt)
+		newStmt, err := influxql.RewriteStatement(stmt)
 		if err != nil {
 			results <- &Result{Err: err}
 			break
@@ -357,12 +402,31 @@ LOOP:
 	}
 }
 
-func (e *QueryExecutor) recover(query *Query, results chan *Result) {
+// Determines if the QueryExecutor will recover any panics or let them crash
+// the server.
+var willCrash bool
+
+func init() {
+	var err error
+	if willCrash, err = strconv.ParseBool(os.Getenv(PanicCrashEnv)); err != nil {
+		willCrash = false
+	}
+}
+
+func (e *QueryExecutor) recover(query *influxql.Query, results chan *Result) {
 	if err := recover(); err != nil {
+		atomic.AddInt64(&e.stats.RecoveredPanics, 1) // Capture the panic in _internal stats.
 		e.Logger.Error(fmt.Sprintf("%s [panic:%s] %s", query.String(), err, debug.Stack()))
 		results <- &Result{
 			StatementID: -1,
 			Err:         fmt.Errorf("%s [panic:%s]", query.String(), err),
+		}
+
+		if willCrash {
+			e.Logger.Error(fmt.Sprintf("\n\n=====\nAll goroutines now follow:"))
+			buf := debug.Stack()
+			e.Logger.Error(fmt.Sprintf("%s", buf))
+			os.Exit(1)
 		}
 	}
 }

@@ -1,4 +1,4 @@
-package influxql
+package query
 
 import "time"
 

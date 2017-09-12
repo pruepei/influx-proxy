@@ -1,4 +1,4 @@
-package influxql
+package query
 
 import (
 	"bytes"
@@ -9,7 +9,8 @@ import (
 	"sort"
 
 	"github.com/gogo/protobuf/proto"
-	internal "github.com/influxdata/influxdb/influxql/internal"
+	"github.com/influxdata/influxdb/influxql"
+	internal "github.com/influxdata/influxdb/query/internal"
 )
 
 // ZeroTime is the Unix nanosecond timestamp for no time.
@@ -87,6 +88,11 @@ func newTagsID(id string) Tags {
 	return Tags{id: id, m: m}
 }
 
+// Equal compares if the Tags are equal to each other.
+func (t Tags) Equal(other Tags) bool {
+	return t.ID() == other.ID()
+}
+
 // ID returns the string identifier for the tags.
 func (t Tags) ID() string { return t.id }
 
@@ -102,6 +108,20 @@ func (t *Tags) Keys() []string {
 	var a []string
 	for k := range t.m {
 		a = append(a, k)
+	}
+	sort.Strings(a)
+	return a
+}
+
+// Values returns a sorted list of all values on the tag.
+func (t *Tags) Values() []string {
+	if t == nil {
+		return nil
+	}
+
+	a := make([]string, 0, len(t.m))
+	for _, v := range t.m {
+		a = append(a, v)
 	}
 	sort.Strings(a)
 	return a
@@ -222,23 +242,23 @@ func encodeAux(aux []interface{}) []*internal.Aux {
 	for i := range aux {
 		switch v := aux[i].(type) {
 		case float64:
-			pb[i] = &internal.Aux{DataType: proto.Int32(Float), FloatValue: proto.Float64(v)}
+			pb[i] = &internal.Aux{DataType: proto.Int32(influxql.Float), FloatValue: proto.Float64(v)}
 		case *float64:
-			pb[i] = &internal.Aux{DataType: proto.Int32(Float)}
+			pb[i] = &internal.Aux{DataType: proto.Int32(influxql.Float)}
 		case int64:
-			pb[i] = &internal.Aux{DataType: proto.Int32(Integer), IntegerValue: proto.Int64(v)}
+			pb[i] = &internal.Aux{DataType: proto.Int32(influxql.Integer), IntegerValue: proto.Int64(v)}
 		case *int64:
-			pb[i] = &internal.Aux{DataType: proto.Int32(Integer)}
+			pb[i] = &internal.Aux{DataType: proto.Int32(influxql.Integer)}
 		case string:
-			pb[i] = &internal.Aux{DataType: proto.Int32(String), StringValue: proto.String(v)}
+			pb[i] = &internal.Aux{DataType: proto.Int32(influxql.String), StringValue: proto.String(v)}
 		case *string:
-			pb[i] = &internal.Aux{DataType: proto.Int32(String)}
+			pb[i] = &internal.Aux{DataType: proto.Int32(influxql.String)}
 		case bool:
-			pb[i] = &internal.Aux{DataType: proto.Int32(Boolean), BooleanValue: proto.Bool(v)}
+			pb[i] = &internal.Aux{DataType: proto.Int32(influxql.Boolean), BooleanValue: proto.Bool(v)}
 		case *bool:
-			pb[i] = &internal.Aux{DataType: proto.Int32(Boolean)}
+			pb[i] = &internal.Aux{DataType: proto.Int32(influxql.Boolean)}
 		default:
-			pb[i] = &internal.Aux{DataType: proto.Int32(int32(Unknown))}
+			pb[i] = &internal.Aux{DataType: proto.Int32(int32(influxql.Unknown))}
 		}
 	}
 	return pb
@@ -252,25 +272,25 @@ func decodeAux(pb []*internal.Aux) []interface{} {
 	aux := make([]interface{}, len(pb))
 	for i := range pb {
 		switch pb[i].GetDataType() {
-		case Float:
+		case influxql.Float:
 			if pb[i].FloatValue != nil {
 				aux[i] = *pb[i].FloatValue
 			} else {
 				aux[i] = (*float64)(nil)
 			}
-		case Integer:
+		case influxql.Integer:
 			if pb[i].IntegerValue != nil {
 				aux[i] = *pb[i].IntegerValue
 			} else {
 				aux[i] = (*int64)(nil)
 			}
-		case String:
+		case influxql.String:
 			if pb[i].StringValue != nil {
 				aux[i] = *pb[i].StringValue
 			} else {
 				aux[i] = (*string)(nil)
 			}
-		case Boolean:
+		case influxql.Boolean:
 			if pb[i].BooleanValue != nil {
 				aux[i] = *pb[i].BooleanValue
 			} else {

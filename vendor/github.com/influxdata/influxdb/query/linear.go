@@ -1,4 +1,4 @@
-package influxql
+package query
 
 // linearFloat computes the the slope of the line between the points (previousTime, previousValue) and (nextTime, nextValue)
 // and returns the value of the point on the line with time windowTime

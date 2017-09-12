@@ -1,12 +1,13 @@
-package influxql
+package query
 
 import (
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/models"
-	"go.uber.org/zap"
+	"github.com/uber-go/zap"
 )
 
 const (
@@ -49,9 +50,9 @@ func NewTaskManager() *TaskManager {
 }
 
 // ExecuteStatement executes a statement containing one of the task management queries.
-func (t *TaskManager) ExecuteStatement(stmt Statement, ctx ExecutionContext) error {
+func (t *TaskManager) ExecuteStatement(stmt influxql.Statement, ctx ExecutionContext) error {
 	switch stmt := stmt.(type) {
-	case *ShowQueriesStatement:
+	case *influxql.ShowQueriesStatement:
 		rows, err := t.executeShowQueriesStatement(stmt)
 		if err != nil {
 			return err
@@ -61,7 +62,7 @@ func (t *TaskManager) ExecuteStatement(stmt Statement, ctx ExecutionContext) err
 			StatementID: ctx.StatementID,
 			Series:      rows,
 		}
-	case *KillQueryStatement:
+	case *influxql.KillQueryStatement:
 		var messages []*Message
 		if ctx.ReadOnly {
 			messages = append(messages, ReadOnlyWarning(stmt.String()))
@@ -80,11 +81,11 @@ func (t *TaskManager) ExecuteStatement(stmt Statement, ctx ExecutionContext) err
 	return nil
 }
 
-func (t *TaskManager) executeKillQueryStatement(stmt *KillQueryStatement) error {
+func (t *TaskManager) executeKillQueryStatement(stmt *influxql.KillQueryStatement) error {
 	return t.KillQuery(stmt.QueryID)
 }
 
-func (t *TaskManager) executeShowQueriesStatement(q *ShowQueriesStatement) (models.Rows, error) {
+func (t *TaskManager) executeShowQueriesStatement(q *influxql.ShowQueriesStatement) (models.Rows, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
@@ -112,11 +113,13 @@ func (t *TaskManager) executeShowQueriesStatement(q *ShowQueriesStatement) (mode
 	}}, nil
 }
 
-func (t *TaskManager) query(qid uint64) (*QueryTask, bool) {
+func (t *TaskManager) queryError(qid uint64, err error) {
 	t.mu.RLock()
-	query, ok := t.queries[qid]
+	query := t.queries[qid]
 	t.mu.RUnlock()
-	return query, ok
+	if query != nil {
+		query.setError(err)
+	}
 }
 
 // AttachQuery attaches a running query to be managed by the TaskManager.
@@ -126,7 +129,7 @@ func (t *TaskManager) query(qid uint64) (*QueryTask, bool) {
 // query finishes running.
 //
 // After a query finishes running, the system is free to reuse a query id.
-func (t *TaskManager) AttachQuery(q *Query, database string, interrupt <-chan struct{}) (uint64, *QueryTask, error) {
+func (t *TaskManager) AttachQuery(q *influxql.Query, database string, interrupt <-chan struct{}) (uint64, *QueryTask, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -173,8 +176,8 @@ func (t *TaskManager) KillQuery(qid uint64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	query, ok := t.queries[qid]
-	if !ok {
+	query := t.queries[qid]
+	if query == nil {
 		return fmt.Errorf("no such query id: %d", qid)
 	}
 
@@ -219,27 +222,15 @@ func (t *TaskManager) waitForQuery(qid uint64, interrupt <-chan struct{}, closin
 
 	select {
 	case <-closing:
-		query, ok := t.query(qid)
-		if !ok {
-			break
-		}
-		query.setError(ErrQueryInterrupted)
+		t.queryError(qid, ErrQueryInterrupted)
 	case err := <-monitorCh:
 		if err == nil {
 			break
 		}
 
-		query, ok := t.query(qid)
-		if !ok {
-			break
-		}
-		query.setError(err)
+		t.queryError(qid, err)
 	case <-timerCh:
-		query, ok := t.query(qid)
-		if !ok {
-			break
-		}
-		query.setError(ErrQueryTimeoutLimitExceeded)
+		t.queryError(qid, ErrQueryTimeoutLimitExceeded)
 	case <-interrupt:
 		// Query was manually closed so exit the select.
 		return
