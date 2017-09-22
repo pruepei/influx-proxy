@@ -103,8 +103,28 @@ func TestInfluxQLAggregate(t *testing.T) {
 	}{
 		{
 			sourceql:      "SELECT mean(water_level) FROM h2o_feet",
-			sourceResults: [][]byte{[]byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","sum","count"],"values":[[0,67777.66900000004,15258]]}]}]}`), []byte("")},
+			sourceResults: [][]byte{[]byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","sum","count"],"values":[[0,67777.66900000004,15258]]}]}]}`), []byte(``)},
 			targetResult:  []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","mean"],"values":[[0,4.442107025822522]]}]}]}`),
+		},
+		{
+			sourceql:      "SELECT max(water_level) FROM h2o_feet",
+			sourceResults: [][]byte{[]byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","max"],"values":[["2015-08-29T07:24:00Z",9.954]]}]}]}`), []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","max"],"values":[["2015-08-29T07:24:00Z",9.964]]}]}]}`)},
+			targetResult:  []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","max"],"values":[["2015-08-29T07:24:00Z",9.964]]}]}]}`),
+		},
+		{
+			sourceql:      "SELECT min(water_level) FROM h2o_feet",
+			sourceResults: [][]byte{[]byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","min"],"values":[["2015-08-29T14:30:00Z",-0.61]]}]}]}`), []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","min"],"values":[["2015-08-29T14:30:00Z",-0.62]]}]}]}`)},
+			targetResult:  []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","min"],"values":[["2015-08-29T14:30:00Z",-0.62]]}]}]}`),
+		},
+		{
+			sourceql:      "SELECT sum(water_level) FROM h2o_feet",
+			sourceResults: [][]byte{[]byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","sum"],"values":[["1970-01-01T00:00:00Z",67777.66900000004]]}]}]}`), []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","sum"],"values":[["1970-01-01T00:00:00Z",67777.66900000004]]}]}]}`)},
+			targetResult:  []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","sum"],"values":[["1970-01-01T00:00:00Z",135555.33800000008]]}]}]}`),
+		},
+		{
+			sourceql:      "SELECT count(water_level) FROM h2o_feet",
+			sourceResults: [][]byte{[]byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","count"],"values":[["1970-01-01T00:00:00Z",15258]]}]}]}`), []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","count"],"values":[["1970-01-01T00:00:00Z",15258]]}]}]}`)},
+			targetResult:  []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","count"],"values":[["1970-01-01T00:00:00Z",30516]]}]}]}`),
 		},
 	}
 	for _, test := range tests {
@@ -113,13 +133,9 @@ func TestInfluxQLAggregate(t *testing.T) {
 			SourceResults: test.sourceResults,
 		}
 		qc.QLGenerator()
-		// qc.aggregatePolicy =
-		// meanReduer(sum(water_level) , count(water_level))
-		// sum(water_level)
-		// count(water_level)
-		// meanReduer(..)
 		qc.Aggregate()
 		if !bytes.Equal(qc.TargetResult, test.targetResult) {
+			t.Errorf("===")
 			t.Errorf("%s", qc.SourceQL)
 			t.Errorf("%s", qc.TargetQL)
 			t.Errorf("%s", qc.SourceResults)
