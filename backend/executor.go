@@ -9,8 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
-	"reflect"
 	"regexp"
 	"strings"
 
@@ -25,15 +25,29 @@ var (
 	ErrNotClusterQuery = errors.New("not a cluster query")
 )
 
-type influxQL string
+type mapFieldVaule map[string]interface{}
+type mapBackendFieldValue []mapFieldVaule
 
+// InfluxQueryContext field name
+//
+//			       / backend
+// 			      /
+//  client --> inflxdb-proxy -- backend
+//    			      \
+//    			       \ backend
+//
+//  client -- sourceQL --> inflxdb-proxy -- targetQL --> backend
+//  backend --  sourceResults --> influxdb-proxy -- targetResult --> client
+//
 type InfluxQueryContext struct {
-	SourceQL        string
-	TargetQL        string
-	SourceResults   [][]byte // chan?
-	TargetResult    []byte
-	aggregatePolicy influxql.Fields
-	errors          error
+	SourceQL      string
+	TargetQL      string
+	SourceResults [][]byte
+	TargetResult  []byte
+	sourceFields  influxql.Fields
+	targetFields  influxql.Fields
+	targetDatas   []mapBackendFieldValue
+	errors        error
 }
 
 // NewQueryContext aim to create a new InfluxQueryContext struct
@@ -62,15 +76,15 @@ func (qc *InfluxQueryContext) QLGenerator() {
 	// select query
 	for _, stmt := range pg.Statements {
 		if selectStatement, ok := stmt.(*influxql.SelectStatement); ok {
-			qc.TargetQL, qc.aggregatePolicy = helperQLSelectGenerator(selectStatement)
+			qc.TargetQL, qc.targetFields, qc.sourceFields = helperQLSelectGenerator(selectStatement)
 		}
 	}
 }
 
-func helperQLSelectGenerator(sourceQL *influxql.SelectStatement) (targetQL string, aggregatePolicy influxql.Fields) {
+func helperQLSelectGenerator(sourceQL *influxql.SelectStatement) (targetQL string, targetFields influxql.Fields, sourceFields influxql.Fields) {
 	newQL := sourceQL.Clone()
-	for _, filed := range newQL.Fields {
-		switch expr := filed.Expr.(type) {
+	for _, field := range newQL.Fields {
+		switch expr := field.Expr.(type) {
 
 		// convert mean(f1) -> sum(f1), count(f1)
 		case *influxql.Call:
@@ -82,28 +96,91 @@ func helperQLSelectGenerator(sourceQL *influxql.SelectStatement) (targetQL strin
 			}
 		}
 	}
-	return fmt.Sprintf("%s", newQL), sourceQL.Fields
+	return fmt.Sprintf("%s", newQL), newQL.Fields, sourceQL.Fields
 }
 
 // Aggregate aim to re-process result from backend
 func (qc *InfluxQueryContext) Aggregate() {
-	for _, resultFromBackend := range qc.SourceResults {
-		result, _ := unmarshalJSON(resultFromBackend)
-		for _, r := range result {
-			helperCacheMiddleResult(r)
-		}
-	}
-}
+	// to prepare the target result which is we wanted.
+	qc.TargetResult = qc.SourceResults[0]
 
-func helperCacheMiddleResult(r *query.Result) {
-	//fieldvalue := make(map[string]string)
-	for _, row := range r.Series {
-		for _, value := range row.Values[0] {
-			fmt.Printf("%s\n", reflect.TypeOf(value))
+	// serialization of per-backend result
+	for _, sourceResult := range qc.SourceResults {
+		var backendFieldValues mapBackendFieldValue
+		result, _ := unmarshalJSON(sourceResult)
+		for _, r := range result {
+			for fieldIndex, field := range qc.targetFields {
+				fieldvalue := make(mapFieldVaule)
+				fieldvalue[fmt.Sprint(field)] = r.Series[0].Values[0][fieldIndex+1]
+				backendFieldValues = append(backendFieldValues, fieldvalue)
+			}
+		}
+		qc.targetDatas = append(qc.targetDatas, backendFieldValues)
+	}
+
+	// do max, min, count, sum, mean
+	for _, field := range qc.sourceFields {
+		switch expr := field.Expr.(type) {
+		case *influxql.Call:
+			if expr.Name == "max" {
+				// 如果来源的 sql 有 max(f1) as sth
+				// 则到所有 backend 的 map 中里面找 k 为 max(f1) as sth 的 value
+				// 取出其最大的
+				// 放到 targetResult 的
+				maxExpr := influxql.Call{Name: "max", Args: expr.Args}
+				for offset, field := range qc.targetFields {
+					if field.Expr.String() == maxExpr.String() {
+						log.Printf("maxExpr %d", offset)
+					}
+				}
+			}
+			if expr.Name == "min" {
+				minExpr := influxql.Call{Name: "min", Args: expr.Args}
+				for offset, field := range qc.targetFields {
+					if field.Expr.String() == minExpr.String() {
+						log.Printf("minExpr %d", offset)
+					}
+				}
+			}
+
+			if expr.Name == "count" {
+				countExpr := influxql.Call{Name: "count", Args: expr.Args}
+				for offset, field := range qc.targetFields {
+					if field.Expr.String() == countExpr.String() {
+						log.Printf("minExpr %d", offset)
+					}
+				}
+			}
+
+			if expr.Name == "sum" {
+				sumExpr := influxql.Call{Name: "sum", Args: expr.Args}
+				for offset, field := range qc.targetFields {
+					if field.Expr.String() == sumExpr.String() {
+						log.Printf("sumExpr %d", offset)
+					}
+				}
+			}
+
+			if expr.Name == "mean" {
+				countExpr := influxql.Call{Name: "count", Args: expr.Args}
+				sumExpr := influxql.Call{Name: "sum", Args: expr.Args}
+				for offset, field := range qc.targetFields {
+					if field.Expr.String() == countExpr.String() {
+						log.Printf("count %d", offset)
+					}
+					if field.Expr.String() == sumExpr.String() {
+						log.Printf("sum %d", offset)
+					}
+				}
+			}
 		}
 	}
-	//log.Printf("%s", fieldvalue)
-	//return fieldvalue
+
+	// un-serialization for targetResult
+	log.Println(qc.SourceQL)
+	log.Println(qc.TargetQL)
+
+	// to re-fill the result
 }
 
 // UnmarshalJSON decode http response -> influxql.Result.
