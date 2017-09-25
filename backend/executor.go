@@ -25,8 +25,7 @@ var (
 	ErrNotClusterQuery = errors.New("not a cluster query")
 )
 
-type mapFieldVaule map[string]interface{}
-type mapBackendFieldValue []mapFieldVaule
+type mapFieldVaules map[string][]interface{}
 
 // InfluxQueryContext field name
 //
@@ -46,7 +45,7 @@ type InfluxQueryContext struct {
 	TargetResult  []byte
 	sourceFields  influxql.Fields
 	targetFields  influxql.Fields
-	targetDatas   []mapBackendFieldValue
+	targetDatas   []mapFieldVaules
 	errors        error
 }
 
@@ -105,17 +104,18 @@ func (qc *InfluxQueryContext) Aggregate() {
 	qc.TargetResult = qc.SourceResults[0]
 
 	// serialization of per-backend result
-	for _, sourceResult := range qc.SourceResults {
-		var backendFieldValues mapBackendFieldValue
-		result, _ := unmarshalJSON(sourceResult)
-		for _, r := range result {
-			for fieldIndex, field := range qc.targetFields {
-				fieldvalue := make(mapFieldVaule)
-				fieldvalue[fmt.Sprint(field)] = r.Series[0].Values[0][fieldIndex+1]
-				backendFieldValues = append(backendFieldValues, fieldvalue)
+	// as: [map[field(column):[value1, value2, value3]], map[field(column):[value1, value2, value3]]...]
+	for fieldIndex, field := range qc.targetFields {
+		var values []interface{}
+		for _, sourceResult := range qc.SourceResults {
+			result, _ := unmarshalJSON(sourceResult)
+			for _, r := range result {
+				values = append(values, r.Series[0].Values[0][fieldIndex+1])
 			}
 		}
-		qc.targetDatas = append(qc.targetDatas, backendFieldValues)
+		m := make(mapFieldVaules)
+		m[fmt.Sprint(field)] = values
+		qc.targetDatas = append(qc.targetDatas, m)
 	}
 
 	// do max, min, count, sum, mean
@@ -123,40 +123,33 @@ func (qc *InfluxQueryContext) Aggregate() {
 		switch expr := field.Expr.(type) {
 		case *influxql.Call:
 			if expr.Name == "max" {
-				// 如果来源的 sql 有 max(f1) as sth
-				// 则到所有 backend 的 map 中里面找 k 为 max(f1) as sth 的 value
-				// 取出其最大的
-				// 放到 targetResult 的
-				maxExpr := influxql.Call{Name: "max", Args: expr.Args}
-				for offset, field := range qc.targetFields {
-					if field.Expr.String() == maxExpr.String() {
-						log.Printf("maxExpr %d", offset)
+				for _, fieldvalues := range qc.targetDatas {
+					if values, ok := fieldvalues[fmt.Sprint(field)]; ok {
+						log.Println(values)
 					}
 				}
+
 			}
 			if expr.Name == "min" {
-				minExpr := influxql.Call{Name: "min", Args: expr.Args}
-				for offset, field := range qc.targetFields {
-					if field.Expr.String() == minExpr.String() {
-						log.Printf("minExpr %d", offset)
+				for _, fieldvalues := range qc.targetDatas {
+					if values, ok := fieldvalues[fmt.Sprint(field)]; ok {
+						log.Println(values)
 					}
 				}
 			}
 
 			if expr.Name == "count" {
-				countExpr := influxql.Call{Name: "count", Args: expr.Args}
-				for offset, field := range qc.targetFields {
-					if field.Expr.String() == countExpr.String() {
-						log.Printf("minExpr %d", offset)
+				for _, fieldvalues := range qc.targetDatas {
+					if values, ok := fieldvalues[fmt.Sprint(field)]; ok {
+						log.Println(values)
 					}
 				}
 			}
 
 			if expr.Name == "sum" {
-				sumExpr := influxql.Call{Name: "sum", Args: expr.Args}
-				for offset, field := range qc.targetFields {
-					if field.Expr.String() == sumExpr.String() {
-						log.Printf("sumExpr %d", offset)
+				for _, fieldvalues := range qc.targetDatas {
+					if values, ok := fieldvalues[fmt.Sprint(field)]; ok {
+						log.Println(values)
 					}
 				}
 			}
@@ -164,12 +157,12 @@ func (qc *InfluxQueryContext) Aggregate() {
 			if expr.Name == "mean" {
 				countExpr := influxql.Call{Name: "count", Args: expr.Args}
 				sumExpr := influxql.Call{Name: "sum", Args: expr.Args}
-				for offset, field := range qc.targetFields {
-					if field.Expr.String() == countExpr.String() {
-						log.Printf("count %d", offset)
+				for _, fieldvalues := range qc.targetDatas {
+					if values, ok := fieldvalues[fmt.Sprint(sumExpr)]; ok {
+						log.Println(values)
 					}
-					if field.Expr.String() == sumExpr.String() {
-						log.Printf("sum %d", offset)
+					if values, ok := fieldvalues[fmt.Sprint(countExpr)]; ok {
+						log.Println(values)
 					}
 				}
 			}
