@@ -136,11 +136,11 @@ func TestInfluxQLAggregate(t *testing.T) {
 		qc.Aggregate()
 		if !bytes.Equal(qc.TargetResult, test.targetResult) {
 			t.Errorf("===")
-			t.Errorf("%s", qc.SourceQL)
-			t.Errorf("%s", qc.TargetQL)
-			t.Errorf("%s", qc.SourceResults)
-			t.Errorf("%s", qc.TargetResult)
-			t.Errorf("%s", test.targetResult)
+			t.Errorf("sourceql:         %s", qc.SourceQL)
+			t.Errorf("targetql:         %s", qc.TargetQL)
+			t.Errorf("sourceResults     %s", qc.SourceResults)
+			t.Errorf("targetResult      %s", qc.TargetResult)
+			t.Errorf("test targetResult %s", test.targetResult)
 		}
 	}
 }

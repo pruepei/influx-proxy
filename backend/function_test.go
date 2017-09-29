@@ -5,6 +5,7 @@
 package backend
 
 import (
+	"log"
 	"testing"
 )
 
@@ -104,6 +105,6 @@ func BenchmarkGetmean(b *testing.B) {
 		},
 	}
 	for _, v := range tests {
-		_ = getmean(v.sets, v.sets)
+		log.Println(getmean(v.sets, v.sets))
 	}
 }

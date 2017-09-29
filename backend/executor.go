@@ -25,6 +25,7 @@ var (
 	ErrNotClusterQuery = errors.New("not a cluster query")
 )
 
+type mapFieldValue map[string]interface{}
 type mapFieldVaules map[string][]interface{}
 
 // InfluxQueryContext field name
@@ -45,7 +46,8 @@ type InfluxQueryContext struct {
 	TargetResult  []byte
 	sourceFields  influxql.Fields
 	targetFields  influxql.Fields
-	targetDatas   []mapFieldVaules
+	sourceDatas   []mapFieldVaules
+	targetDatas   []mapFieldValue
 	errors        error
 }
 
@@ -100,93 +102,127 @@ func helperQLSelectGenerator(sourceQL *influxql.SelectStatement) (targetQL strin
 
 // Aggregate aim to re-process result from backend
 func (qc *InfluxQueryContext) Aggregate() {
-	// to prepare the target result which is we wanted.
+	// copy a sourceResult for targetResult
 	qc.TargetResult = qc.SourceResults[0]
+	targetResult, _ := unmarshalHttpResponse(qc.TargetResult)
 
 	// serialization of per-backend result
 	// as: [map[field(column):[value1, value2, value3]], map[field(column):[value1, value2, value3]]...]
 	for fieldIndex, field := range qc.targetFields {
 		var values []interface{}
 		for _, sourceResult := range qc.SourceResults {
-			result, _ := unmarshalJSON(sourceResult)
+			result, _ := unmarshalHttpResponse(sourceResult)
 			for _, r := range result {
 				values = append(values, r.Series[0].Values[0][fieldIndex+1])
 			}
 		}
 		m := make(mapFieldVaules)
 		m[fmt.Sprint(field)] = values
-		qc.targetDatas = append(qc.targetDatas, m)
+		qc.sourceDatas = append(qc.sourceDatas, m)
 	}
 
 	// do max, min, count, sum, mean
-	for _, field := range qc.sourceFields {
+	// and keep the result to qc.targetDatas
+	for fieldOffset, field := range qc.sourceFields {
 		switch expr := field.Expr.(type) {
 		case *influxql.Call:
+			var mapKVS []mapFieldValue
+			mapKV := make(mapFieldValue)
 			if expr.Name == "max" {
-				for _, fieldvalues := range qc.targetDatas {
+				for _, fieldvalues := range qc.sourceDatas {
 					if values, ok := fieldvalues[fmt.Sprint(field)]; ok {
-						log.Println(values)
+						mapKV[fmt.Sprint(field)] = getmax(values)
+						mapKVS = append(mapKVS, mapKV)
 					}
 				}
 
 			}
 			if expr.Name == "min" {
-				for _, fieldvalues := range qc.targetDatas {
+				for _, fieldvalues := range qc.sourceDatas {
 					if values, ok := fieldvalues[fmt.Sprint(field)]; ok {
-						log.Println(values)
+						mapKV[fmt.Sprint(field)] = getmin(values)
+						mapKVS = append(mapKVS, mapKV)
 					}
 				}
 			}
 
-			if expr.Name == "count" {
-				for _, fieldvalues := range qc.targetDatas {
+			if expr.Name == "count" || expr.Name == "sum" {
+				for _, fieldvalues := range qc.sourceDatas {
 					if values, ok := fieldvalues[fmt.Sprint(field)]; ok {
-						log.Println(values)
+						mapKV[fmt.Sprint(field)] = getsum(values)
+						mapKVS = append(mapKVS, mapKV)
 					}
 				}
 			}
-
-			if expr.Name == "sum" {
-				for _, fieldvalues := range qc.targetDatas {
-					if values, ok := fieldvalues[fmt.Sprint(field)]; ok {
-						log.Println(values)
-					}
-				}
-			}
-
 			if expr.Name == "mean" {
-				countExpr := influxql.Call{Name: "count", Args: expr.Args}
-				sumExpr := influxql.Call{Name: "sum", Args: expr.Args}
-				for _, fieldvalues := range qc.targetDatas {
+				countExpr := &influxql.Call{Name: "count", Args: expr.Args}
+				sumExpr := &influxql.Call{Name: "sum", Args: expr.Args}
+				var valueCount []interface{}
+				var valueSum []interface{}
+				for i, fieldvalues := range qc.sourceDatas {
+
+					// delete the column, value of SUM()
 					if values, ok := fieldvalues[fmt.Sprint(sumExpr)]; ok {
-						log.Println(values)
+						valueSum = values
+						qc.sourceDatas = append(qc.sourceDatas[:i], qc.sourceDatas[i+1:]...)
+						targetResult[0].Series[0].Columns = append(targetResult[0].Series[0].Columns[:i+1], targetResult[0].Series[0].Columns[i+2:]...)
+						targetResult[0].Series[0].Values[0] = append(targetResult[0].Series[0].Values[0][:i+1], targetResult[0].Series[0].Values[0][i+2:]...)
 					}
+
+					// didn't delete the value of COUNT(), but replace the name with `mean`
 					if values, ok := fieldvalues[fmt.Sprint(countExpr)]; ok {
-						log.Println(values)
+						valueCount = values
+						qc.sourceDatas[fieldOffset] = mapFieldVaules{fmt.Sprint(field): values}
+						// a bug if more mean aggregate with one SQL
+						targetResult[0].Series[0].Columns[fieldOffset+1] = "mean"
 					}
+
 				}
+				mapKV[fmt.Sprint(field)] = getmean(valueSum, valueCount)
+				mapKVS = append(mapKVS, mapKV)
 			}
+			qc.targetDatas = mapKVS
 		}
 	}
 
-	// un-serialization for targetResult
-	log.Println(qc.SourceQL)
-	log.Println(qc.TargetQL)
-
-	// to re-fill the result
+	// create a new result by qc.targetDatas and sourceResult
+	for i, f := range qc.sourceFields {
+		for k, v := range qc.targetDatas[i] {
+			if fmt.Sprint(f) == fmt.Sprint(k) {
+				log.Println(v)
+				log.Println(targetResult[0].Series[0].Values[0][i+1])
+				targetResult[0].Series[0].Values[0][i+1] = v
+			}
+		}
+	}
+	qc.TargetResult, _ = marshalHttpResponse(targetResult)
 }
 
-// UnmarshalJSON decode http response -> influxql.Result.
-func unmarshalJSON(b []byte) ([]*query.Result, error) {
+// unmarshalHttpResponse aim decode http response -> influxql.Results.
+func unmarshalHttpResponse(response []byte) ([]*query.Result, error) {
 	var o struct {
 		Results []*query.Result `json:"results,omitempty"`
 		Err     string          `json:"error,omitempty"`
 	}
-	err := json.Unmarshal(b, &o)
+	err := json.Unmarshal(response, &o)
 	if err != nil {
 		return nil, err
 	}
 	return o.Results, nil
+}
+
+// unmarshalHttpResponse aim decode http response -> influxql.Results.
+func marshalHttpResponse(r []*query.Result) (response []byte, e error) {
+	// Define a struct that outputs "error" as a string.
+	var o struct {
+		Results []*query.Result `json:"results,omitempty"`
+		Err     string          `json:"error,omitempty"`
+	}
+
+	// Copy fields to output struct.
+	o.Results = r
+
+	return json.Marshal(&o)
 }
 
 type InfluxQLExecutor struct {
