@@ -5,9 +5,6 @@
 package backend
 
 import (
-	"bytes"
-	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"testing"
@@ -17,63 +14,31 @@ import (
 )
 
 func TestScanKey(t *testing.T) {
-	var points []string = []string{
-		"cpu,host=server01,region=uswest value=1 1434055562000000000",
-		"cpu value=3,value2=4 1434055562000010000",
-		"temper\\ ature,machine=unit42,type=assembly internal=32,external=100 1434055562000000035",
-		"temper\\,ature,machine=unit143,type=assembly internal=22,external=130 1434055562005000035",
+	tests := []struct {
+		point string
+		key   string
+	}{
+		{
+			point: "cpu,host=server01,region=uswest value=1 1434055562000000000",
+			key:   "cpuserver01",
+		},
+		{
+			point: "cpu value=3,value2=4 1434055562000010000",
+			key:   "cpu",
+		},
+		{
+			point: "temper\\ ature,machine=unit42,type=assembly internal=32,external=100 1434055562000000035",
+			key:   "temper\\ ature",
+		},
+		{
+			point: "temper\\,ature,machine=unit143,type=assembly internal=22,external=130 1434055562005000035",
+			key:   "temper\\,ature",
+		},
 	}
-	var keys []string = []string{
-		"cpu",
-		"cpu",
-		"temper ature",
-		"temper,ature",
-	}
-
-	var key string
-	var err error
-	for i, s := range points {
-		key, err = ScanKey([]byte(s))
-		if err != nil {
-			t.Errorf("error: %s", err)
-			return
-		}
-		if key != keys[i] {
-			t.Errorf("quota test failed: %s, %s", key, keys[i])
-			return
-		}
-	}
-
-	return
-}
-
-func BenchmarkScanKey(b *testing.B) {
-	buf := &bytes.Buffer{}
-	for i := 0; i < b.N; i++ {
-		fmt.Fprintf(buf, "%s%d,a=%d,b=2 c=3 10000\n", "name", i, i)
-	}
-	b.ResetTimer()
-
-	var err error
-	var line []byte
-	for {
-		line, err = buf.ReadBytes('\n')
-		switch err {
-		default:
-			b.Error(err)
-			return
-		case io.EOF, nil:
-		}
-
-		if len(line) == 0 {
-			break
-		}
-
-		line = bytes.TrimRight(line, " \t\r\n")
-		_, err = ScanKey(line)
-		if err != nil {
-			b.Error(err)
-			return
+	for _, v := range tests {
+		target := ScanKey(v.point)
+		if v.key != ScanKey(v.point) {
+			t.Errorf("point is: %s and key is: %s", v.point, target)
 		}
 	}
 }

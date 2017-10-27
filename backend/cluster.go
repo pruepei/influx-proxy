@@ -7,7 +7,6 @@ package backend
 import (
 	"bytes"
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -38,24 +37,38 @@ type Result struct {
 	Err error
 }
 
-func ScanKey(pointbuf []byte) (key string, err error) {
-	var keybuf [100]byte
-	keyslice := keybuf[0:0]
-	buflen := len(pointbuf)
-	for i := 0; i < buflen; i++ {
-		c := pointbuf[i]
-		switch c {
-		case '\\':
+func getMeasurementFromPoint(point string) (measurement string) {
+	pointlen := len(point)
+	for i := 0; i < pointlen; i++ {
+		if point[i] == ',' || point[i] == ' ' {
+			return point[0:i]
+		}
+		if point[i] == '\\' {
 			i++
-			keyslice = append(keyslice, pointbuf[i])
-		case ' ', ',':
-			key = string(keyslice)
-			return
-		default:
-			keyslice = append(keyslice, c)
 		}
 	}
-	return "", io.EOF
+	return ""
+}
+
+func getHostnameFromPoint(point string) (hostname string) {
+	if !strings.Contains(point, "host=") {
+		return ""
+	}
+	pointlen := len(point)
+	for i := 0; i < pointlen; i++ {
+		if point[i:i+5] == "host=" {
+			for j := i + 5; j < pointlen; j++ {
+				if point[j] == ',' {
+					return point[i+5 : j]
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func ScanKey(point string) (key string) {
+	return getMeasurementFromPoint(point) + getHostnameFromPoint(point)
 }
 
 // faster then bytes.TrimRight, not sure why.
