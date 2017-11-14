@@ -13,36 +13,6 @@ import (
 	"github.com/toolkits/consistent/rings"
 )
 
-func TestScanKey(t *testing.T) {
-	tests := []struct {
-		point string
-		key   string
-	}{
-		{
-			point: "cpu,host=server01,region=uswest value=1 1434055562000000000",
-			key:   "cpuserver01",
-		},
-		{
-			point: "cpu value=3,value2=4 1434055562000010000",
-			key:   "cpu",
-		},
-		{
-			point: "temper\\ ature,machine=unit42,type=assembly internal=32,external=100 1434055562000000035",
-			key:   "temper\\ ature",
-		},
-		{
-			point: "temper\\,ature,machine=unit143,type=assembly internal=22,external=130 1434055562005000035",
-			key:   "temper\\,ature",
-		},
-	}
-	for _, v := range tests {
-		target := ScanKey(v.point)
-		if v.key != ScanKey(v.point) {
-			t.Errorf("point is: %s and key is: %s", v.point, target)
-		}
-	}
-}
-
 func CreateTestInfluxCluster() (ic *InfluxCluster, err error) {
 	redisConfig := &RedisConfigSource{}
 	nodeConfig := &NodeConfig{}
@@ -65,16 +35,16 @@ func CreateTestInfluxCluster() (ic *InfluxCluster, err error) {
 	ic.backends = backends
 	ic.nexts = "test2"
 	ic.bas = append(ic.bas, backends["test2"])
-	m2ring := make(map[string]*Ring)
-	r1 := &Ring{n2bs: make([][]BackendAPI, 1)}
-	r1.n2bs[0] = []BackendAPI{backends["write_only"], backends["test1"]}
+	measurement2ring := make(map[string]*Ring)
+	r1 := &Ring{node2backends: make([][]BackendAPI, 1)}
+	r1.node2backends[0] = []BackendAPI{backends["write_only"], backends["test1"]}
 	r1.ring = rings.NewConsistentHashNodesRing(DefaultReplicas, []string{"0"})
-	m2ring["cpu"] = r1
-	r2 := &Ring{n2bs: make([][]BackendAPI, 1)}
-	r2.n2bs[0] = []BackendAPI{backends["write_only"]}
+	measurement2ring["cpu"] = r1
+	r2 := &Ring{node2backends: make([][]BackendAPI, 1)}
+	r2.node2backends[0] = []BackendAPI{backends["write_only"]}
 	r2.ring = rings.NewConsistentHashNodesRing(DefaultReplicas, []string{"0"})
-	m2ring["write_only"] = r2
-	ic.m2ring = m2ring
+	measurement2ring["write_only"] = r2
+	ic.measurement2ring = measurement2ring
 
 	return
 }
@@ -165,17 +135,17 @@ func TestInfluxdbClusterQuery(t *testing.T) {
 		},
 		{
 			name:  "cpu_load",
-			query: " select cpu_load from cpu WHERE time > now() - 1m",
+			query: "select cpu_load from cpu WHERE time > now() - 1m",
 			want:  200,
 		},
 		{
 			name:  "cpu.load",
-			query: " select cpu_load from \"cpu.load\" WHERE time > now() - 1m",
+			query: "select cpu_load from \"cpu.load\" WHERE time > now() - 1m",
 			want:  200,
 		},
 		{
 			name:  "load.cpu",
-			query: " select cpu_load from \"load.cpu\" WHERE time > now() - 1m",
+			query: "select cpu_load from \"load.cpu\" WHERE time > now() - 1m",
 			want:  400,
 		},
 		{
@@ -185,7 +155,7 @@ func TestInfluxdbClusterQuery(t *testing.T) {
 		},
 		{
 			name:  "delete_cpu",
-			query: " DELETE FROM \"cpu\" WHERE time < '2000-01-01T00:00:00Z'",
+			query: "DELETE FROM \"cpu\" WHERE time < '2000-01-01T00:00:00Z'",
 			want:  400,
 		},
 		{
@@ -195,17 +165,17 @@ func TestInfluxdbClusterQuery(t *testing.T) {
 		},
 		{
 			name:  "cpu.load",
-			query: " select cpu_load from \"cpu.load\" WHERE time > now() - 1m and host =~ /()$/",
+			query: "select cpu_load from \"cpu.load\" WHERE time > now() - 1m and host =~ /()$/",
 			want:  400,
 		},
 		{
 			name:  "cpu.load",
-			query: " select cpu_load from \"cpu.load\" WHERE time > now() - 1m and host =~ /^()$/",
+			query: "select cpu_load from \"cpu.load\" WHERE time > now() - 1m and host =~ /^()$/",
 			want:  400,
 		},
 		{
 			name:  "write.only",
-			query: " select cpu_load from write_only WHERE time > now() - 1m",
+			query: "select cpu_load from write_only WHERE time > now() - 1m",
 			want:  400,
 		},
 	}

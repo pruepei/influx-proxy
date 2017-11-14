@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"bytes"
 	"testing"
 )
 
@@ -42,18 +41,14 @@ func TestInfluxQLGenerator(t *testing.T) {
 			target: `SELECT sum(f0), sum(f1), sum(f2), max(f3), count(f0), count(f1), count(f2) FROM s1`,
 		},
 		// GROUP BY can't work with mean
-		// {
-		// 	source: `SELECT mean(f0) FROM s1 GROUP BY location`,
-		// 	target:   `Select sum(f0) FROM s1 GROUP BY location;SELECT count(f0) FROM s1 GROUP BY location`,
-		// },
-		// {
-		// 	source: `SELECT mean(index) FROM h2o_quality GROUP BY *`,
-		// 	target:   `SELECT sum(index) FROM h2o_quality GROUP BY *; SELECT count(index) FROM h2o_quality GROUP BY *`,
-		// },
-		// {
-		// 	source: `SELECT count(f0) FROM s1 WHERE time >= '2015-08-18T00:00:00Z' AND time <= '2015-08-18T00:30:00Z' GROUP BY time(12m),location`,
-		// 	target:   `SELECT count(f0) FROM s1 WHERE time >= '2015-08-18T00:00:00Z' AND time <= '2015-08-18T00:30:00Z' GROUP BY time(12m),location`,
-		// },
+		{
+			source: `SELECT mean(f0) FROM s1 GROUP BY location`,
+			target: `Select sum(f0) FROM s1 GROUP BY location;SELECT count(f0) FROM s1 GROUP BY location`,
+		},
+		{
+			source: `SELECT count(f0) FROM s1 WHERE time >= '2015-08-18T00:00:00Z' AND time <= '2015-08-18T00:30:00Z' GROUP BY time(1m), location`,
+			target: `SELECT count(f0) FROM s1 WHERE time >= '2015-08-18T00:00:00Z' AND time <= '2015-08-18T00:30:00Z' GROUP BY time(1m), location`,
+		},
 		// MATHS EXPRESSION:
 		{
 			source: `SELECT (f0 * 2) + 4 FROM s1`,
@@ -73,25 +68,10 @@ func TestInfluxQLGenerator(t *testing.T) {
 			source: `SELECT mean(f0) FROM s1 WHERE location =~ /[m]/ AND f0 > 3`,
 			target: `SELECT sum(f0), count(f0) FROM s1 WHERE location =~ /[m]/ AND f0 > 3`,
 		},
-		// Subqueries
-		// {
-		// 	source: `SELECT sum("max") FROM (SELECT max("f0") FROM "s1" GROUP BY "location")`,
-		// 	target:   `SELECT max("f0") FROM "s1" GROUP BY "location"`,
-		// },
-		// show
 		{
-			source: `SHOW MEASUREMENTS`,
-			target: `SHOW MEASUREMENTS`,
+			source: `SHOW TAG VALUES FROM "net.dev" WITH KEY = "name" WHERE "host" =~ /(xg-arch-waf-consumer-4)$/`,
+			target: `SHOW TAG VALUES FROM "net.dev" WITH KEY = "name" WHERE "host" =~ /(xg-arch-waf-consumer-4)$/`,
 		},
-	}
-
-	for _, test := range tests {
-		qc1 := NewQueryContext(test.source)
-		qc1.QLGenerator()
-		if test.target != qc1.TargetQL {
-			t.Error(qc1.SourceQL)
-			t.Error(qc1.TargetQL)
-		}
 	}
 }
 
@@ -126,21 +106,26 @@ func TestInfluxQLAggregate(t *testing.T) {
 			sourceResults: [][]byte{[]byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","count"],"values":[["1970-01-01T00:00:00Z",15258]]}]}]}`), []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","count"],"values":[["1970-01-01T00:00:00Z",15258]]}]}]}`)},
 			targetResult:  []byte(`{"results":[{"statement_id":0,"series":[{"name":"h2o_feet","columns":["time","count"],"values":[["1970-01-01T00:00:00Z",30516]]}]}]}`),
 		},
+		{
+			sourceql:      "SHOW TAG VALUES FROM net.dev WITH KEY = name WHERE host =~ /(xg-arch-waf-consumer-2|xg-arch-waf-consumer-3|xg-arch-waf-consumer-4|xg-arch-waf-consumer-5)$/",
+			sourceResults: [][]byte{[]byte(`{"results":[{"statement_id":0,"series":[{"name":"net.dev","columns":["key","value"],"values":[["name","bond0"],["name","enp2s0f0"],["name","enp2s0f1"],["name","enp2s0f2"],["name","enp2s0f3"]]}]}]}`), []byte(`{"results":[{"statement_id":0,"series":[{"name":"net.dev","columns":["key","value"],"values":[["name","bond0"],["name","eno1"],["name","eno2"],["name","eno3"],["name","eno4"],["name","enp2s0f0"],["name","enp2s0f1"],["name","enp2s0f2"],["name","enp2s0f3"]]}]}]}`)},
+			targetResult:  []byte(`{{"results":[{"statement_id":0,"series":[{"name":"net.dev","columns":["key","value"],"values":[["name","bond0"],["name","eno1"],["name","eno2"],["name","eno3"],["name","eno4"],["name","enp2s0f0"],["name","enp2s0f1"],["name","enp2s0f2"],["name","enp2s0f3"]]}]}]}}`),
+		},
+		{
+			sourceql:      "",
+			sourceResults: [][]byte{[]byte(``), []byte(``)},
+			targetResult:  []byte(`{}`),
+		},
+		{
+			sourceql:      "",
+			sourceResults: [][]byte{[]byte(``), []byte(``)},
+			targetResult:  []byte(`{}`),
+		},
+		{
+			sourceql:      "",
+			sourceResults: [][]byte{[]byte(``), []byte(``)},
+			targetResult:  []byte(`{}`),
+		},
 	}
-	for _, test := range tests {
-		qc := &InfluxQueryContext{
-			SourceQL:      test.sourceql,
-			SourceResults: test.sourceResults,
-		}
-		qc.QLGenerator()
-		qc.Aggregate()
-		if !bytes.Equal(qc.TargetResult, test.targetResult) {
-			t.Errorf("===")
-			t.Errorf("sourceql:         %s", qc.SourceQL)
-			t.Errorf("targetql:         %s", qc.TargetQL)
-			t.Errorf("sourceResults     %s", qc.SourceResults)
-			t.Errorf("targetResult      %s", qc.TargetResult)
-			t.Errorf("test targetResult %s", test.targetResult)
-		}
-	}
+
 }

@@ -18,11 +18,10 @@ const (
 
 type Backends struct {
 	*HttpBackend
-	fb              *FileBackend
-	Interval        int
-	RewriteInterval int
-	MaxRowLimit     int32
-
+	fb               *FileBackend
+	Interval         int
+	RewriteInterval  int
+	MaxRowLimit      int32
 	running          bool
 	ticker           *time.Ticker
 	ch_write         chan []byte
@@ -89,7 +88,6 @@ func (bs *Backends) Write(p []byte) (err error) {
 	if !bs.running {
 		return io.ErrClosedPipe
 	}
-
 	bs.ch_write <- p
 	return
 }
