@@ -108,6 +108,13 @@ func (rcs *RedisConfigSource) LoadNode() (nodecfg NodeConfig, err error) {
 		return
 	}
 
+	// HGETALL will return empty map when key not exists
+	if len(val) == 0 {
+		err = ErrIllegalConfig
+		log.Printf("load node error: b:%s not configured", rcs.node)
+		return
+	}
+
 	err = LoadStructFromMap(val, &nodecfg)
 	if err != nil {
 		log.Printf("redis load error: b:%s", rcs.node)
